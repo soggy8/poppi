@@ -7,7 +7,6 @@ edition = "2021"
 gtk = { version = "0.9", package = "gtk4", features = ["v4_12"] }
 glib = { version = "0.21", features = [] }
 gio = { version = "0.21", features = ["v2_80"] }
-tokio = { version = "1", features = ["full"] }
 fuzzy-matcher = "0.3"
 serde = { version = "1.0", features = ["derive"] }
 toml = { version = "0.8", features = ["preserve_order"] }
@@ -17,6 +16,11 @@ urlencoding = "2.1"
 
 [profile.release]
 opt-level = 3
-lto = true
+lto = "fat"
 codegen-units = 1
+strip = true
+panic = "abort"
+
+[profile.release.package."*"]
+opt-level = 3
 

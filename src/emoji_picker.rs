@@ -74,29 +74,26 @@ impl EmojiPicker {
         }
 
         let query_lower = query.to_lowercase();
-        let mut results: Vec<(&Emoji, i64)> = self
-            .emojis
-            .iter()
-            .filter_map(|emoji| {
-                // Match against name
-                let name_score = self.matcher.fuzzy_match(&emoji.name.to_lowercase(), &query_lower);
-                
-                // Match against keywords
-                let keyword_score = emoji.keywords.iter()
-                    .filter_map(|kw| self.matcher.fuzzy_match(&kw.to_lowercase(), &query_lower))
-                    .max();
+        let mut results: Vec<(&Emoji, i64)> = Vec::with_capacity(20);
+        
+        for emoji in &self.emojis {
+            // Match against name
+            let name_score = self.matcher.fuzzy_match(&emoji.name, &query_lower);
+            
+            // Match against keywords (compute lowercase on the fly is fine for small set)
+            let keyword_score = emoji.keywords.iter()
+                .filter_map(|kw| self.matcher.fuzzy_match(kw, &query_lower))
+                .max();
 
-                let score = name_score.unwrap_or(0).max(keyword_score.unwrap_or(0));
-                
-                if score > 0 {
-                    Some((emoji, score))
-                } else {
-                    None
-                }
-            })
-            .collect();
+            let score = name_score.unwrap_or(0).max(keyword_score.unwrap_or(0));
+            
+            if score > 0 {
+                results.push((emoji, score));
+            }
+        }
 
-        results.sort_by(|a, b| b.1.cmp(&a.1));
+        // Use unstable sort for better performance
+        results.sort_unstable_by(|a, b| b.1.cmp(&a.1));
         results.truncate(20);
         results
     }

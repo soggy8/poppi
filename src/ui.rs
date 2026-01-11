@@ -10,6 +10,7 @@ use gtk::gdk;
 use gtk::{Application, Entry, ListBox, ListBoxRow, Box as GtkBox, Label, Window, ScrolledWindow, EventControllerKey};
 use std::sync::{Arc, Mutex};
 use std::io::Write;
+use std::thread;
 
 pub struct LauncherState {
     pub app_launcher: AppLauncher,
@@ -41,13 +42,21 @@ pub enum ResultItem {
 impl LauncherState {
     pub fn new() -> Self {
         Self {
-            app_launcher: AppLauncher::default(),
+            app_launcher: AppLauncher::empty(), // Start with empty launcher for lazy loading
             emoji_picker: EmojiPicker::new(),
             current_mode: Mode::Apps,
             results: Vec::new(),
             displayed_results: Vec::new(),
             selected_index: 0,
         }
+    }
+
+    pub fn set_app_launcher(&mut self, app_launcher: AppLauncher) {
+        self.app_launcher = app_launcher;
+    }
+
+    pub fn is_app_launcher_loaded(&self) -> bool {
+        !self.app_launcher.apps().is_empty()
     }
 
     pub fn update_query(&mut self, query: &str) {
@@ -297,9 +306,11 @@ pub fn build_ui(app: &Application, config: Config) {
         state.update_query(&query);
         
         // Limit results to max_results (5) and store in displayed_results
-        state.displayed_results = state.results.iter().take(max_results_clone).cloned().collect();
+        // Build displayed_results in one step to avoid borrowing issues
+        let displayed: Vec<_> = state.results.iter().take(max_results_clone).cloned().collect();
+        state.displayed_results = displayed.clone();
         state.selected_index = 0; // Reset selection when query changes
-        update_results_list(&list_box_clone, &state.displayed_results);
+        update_results_list(&list_box_clone, &displayed);
         
         // Clear selection when results change
         list_box_clone.unselect_all();
@@ -421,9 +432,23 @@ pub fn build_ui(app: &Application, config: Config) {
     main_box.append(&scrolled);
     window.set_child(Some(&main_box));
 
-    // Show window
+    // Show window immediately (fast launch!)
     window.present();
     entry.grab_focus();
+
+    // Load apps in background thread after window appears (lazy loading)
+    let state_clone = state.clone();
+    thread::spawn(move || {
+        // Load apps in background
+        if let Ok(app_launcher) = AppLauncher::new() {
+            // Update UI from background thread using glib MainContext
+            glib::MainContext::default().invoke(move || {
+                let mut state = state_clone.lock().unwrap();
+                state.set_app_launcher(app_launcher);
+                // Apps are now loaded - next search will use them
+            });
+        }
+    });
 }
 
 fn update_results_list(list_box: &ListBox, results: &[ResultItem]) {
