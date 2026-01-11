@@ -16,6 +16,8 @@ pub struct LauncherState {
     pub emoji_picker: EmojiPicker,
     pub current_mode: Mode,
     pub results: Vec<ResultItem>,
+    pub displayed_results: Vec<ResultItem>, // Results currently shown in UI
+    pub selected_index: usize, // Currently selected item index
 }
 
 #[derive(Clone, Debug)]
@@ -43,6 +45,8 @@ impl LauncherState {
             emoji_picker: EmojiPicker::new(),
             current_mode: Mode::Apps,
             results: Vec::new(),
+            displayed_results: Vec::new(),
+            selected_index: 0,
         }
     }
 
@@ -142,11 +146,12 @@ impl LauncherState {
     }
 
     pub fn execute_selected(&self, index: usize) -> Result<(), Box<dyn std::error::Error>> {
-        if index >= self.results.len() {
+        // Use displayed_results instead of results
+        if index >= self.displayed_results.len() {
             return Err("Index out of bounds".into());
         }
 
-        match &self.results[index] {
+        match &self.displayed_results[index] {
             ResultItem::App(app) => {
                 self.app_launcher.launch(app)?;
             }
@@ -185,12 +190,18 @@ impl LauncherState {
 pub fn build_ui(app: &Application, config: Config) {
     let state = Arc::new(Mutex::new(LauncherState::new()));
 
-    // Create main window
+    // Fixed width, dynamic height based on results
+    let window_width = 600;
+    let entry_height = 60; // Height for just the search bar
+    let row_height = 50; // Approximate height per result row
+    let max_results = 5;
+
+    // Create main window - fixed width
     let window = Window::builder()
         .application(app)
         .title("Poppi Launcher")
-        .default_width(config.theme.width)
-        .default_height(config.theme.height)
+        .default_width(window_width)
+        .default_height(entry_height)
         .decorated(false)
         .resizable(false)
         .build();
@@ -199,10 +210,10 @@ pub fn build_ui(app: &Application, config: Config) {
     let main_box = GtkBox::builder()
         .orientation(gtk::Orientation::Vertical)
         .spacing(10)
-        .margin_top(20)
-        .margin_bottom(20)
-        .margin_start(20)
-        .margin_end(20)
+        .margin_top(10)
+        .margin_bottom(10)
+        .margin_start(10)
+        .margin_end(10)
         .build();
 
     // Search entry
@@ -214,9 +225,13 @@ pub fn build_ui(app: &Application, config: Config) {
     let list_box = ListBox::new();
     let scrolled = ScrolledWindow::builder()
         .child(&list_box)
-        .min_content_width(config.theme.width - 40)
-        .max_content_height(config.theme.height - 100)
+        .min_content_width(window_width - 40)
+        .hscrollbar_policy(gtk::PolicyType::Never)
+        .vscrollbar_policy(gtk::PolicyType::Never)
         .build();
+    
+    // Initially hide the results list
+    scrolled.set_visible(false);
 
     // Apply CSS styling
     let css = format!(
@@ -267,41 +282,120 @@ pub fn build_ui(app: &Application, config: Config) {
         gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
     );
 
-    // Update results when entry changes
+    // Update results when entry changes and adjust window height
     let state_clone = state.clone();
     let list_box_clone = list_box.clone();
+    let scrolled_clone = scrolled.clone();
+    let window_clone = window.clone();
+    let row_height_clone = row_height;
+    let entry_height_clone = entry_height;
+    let window_width_clone = window_width;
+    let max_results_clone = max_results;
     entry.connect_changed(move |entry| {
         let query = entry.text();
         let mut state = state_clone.lock().unwrap();
         state.update_query(&query);
-        update_results_list(&list_box_clone, &state.results);
+        
+        // Limit results to max_results (5) and store in displayed_results
+        state.displayed_results = state.results.iter().take(max_results_clone).cloned().collect();
+        state.selected_index = 0; // Reset selection when query changes
+        update_results_list(&list_box_clone, &state.displayed_results);
+        
+        // Clear selection when results change
+        list_box_clone.unselect_all();
+        
+        // Calculate height based on number of results
+        let num_results = state.displayed_results.len();
+        if num_results > 0 {
+            // Show results and adjust height
+            scrolled_clone.set_visible(true);
+            let total_height = entry_height_clone + (num_results as i32 * row_height_clone) + 20; // +20 for margins/spacing
+            window_clone.set_default_size(window_width_clone, total_height);
+            window_clone.set_size_request(window_width_clone, total_height);
+        } else {
+            // Hide results, just show search bar
+            scrolled_clone.set_visible(false);
+            window_clone.set_default_size(window_width_clone, entry_height_clone);
+            window_clone.set_size_request(window_width_clone, entry_height_clone);
+        }
     });
 
-    // Handle Enter key
+    // Handle Enter key - execute selected item
     let state_clone = state.clone();
     let window_clone = window.clone();
+    let list_box_clone = list_box.clone();
     entry.connect_activate(move |_entry| {
         let state = state_clone.lock().unwrap();
-        if !state.results.is_empty() {
-            if let Err(e) = state.execute_selected(0) {
+        if !state.displayed_results.is_empty() {
+            // Get selected row or use first item
+            let selected_index = if let Some(selected_row) = list_box_clone.selected_row() {
+                selected_row.index() as usize
+            } else {
+                0
+            };
+            if let Err(e) = state.execute_selected(selected_index) {
                 eprintln!("Error executing: {}", e);
             }
             window_clone.close();
         }
     });
 
-    // Handle Escape key
-    let key_controller = EventControllerKey::new();
+    // Handle keyboard navigation (Escape, Arrow keys) on the entry
+    let entry_key_controller = EventControllerKey::new();
     let window_clone = window.clone();
-    key_controller.connect_key_pressed(move |_, keyval, _, _| {
-        if keyval == gdk::Key::Escape {
-            window_clone.close();
-            glib::Propagation::Stop
-        } else {
-            glib::Propagation::Proceed
+    let list_box_clone = list_box.clone();
+    let state_clone = state.clone();
+    entry_key_controller.connect_key_pressed(move |_, keyval, _, _| {
+        match keyval {
+            gdk::Key::Escape => {
+                window_clone.close();
+                glib::Propagation::Stop
+            }
+            gdk::Key::Down | gdk::Key::KP_Down => {
+                // Move selection down
+                let state = state_clone.lock().unwrap();
+                if !state.displayed_results.is_empty() {
+                    if let Some(selected_row) = list_box_clone.selected_row() {
+                        let current_index = selected_row.index() as usize;
+                        let next_index = (current_index + 1).min(state.displayed_results.len() - 1);
+                        if let Some(next_row) = list_box_clone.row_at_index(next_index as i32) {
+                            list_box_clone.select_row(Some(&next_row));
+                        }
+                    } else {
+                        // Select first row if none selected
+                        if let Some(first_row) = list_box_clone.row_at_index(0) {
+                            list_box_clone.select_row(Some(&first_row));
+                        }
+                    }
+                }
+                glib::Propagation::Stop
+            }
+            gdk::Key::Up | gdk::Key::KP_Up => {
+                // Move selection up
+                let state = state_clone.lock().unwrap();
+                if !state.displayed_results.is_empty() {
+                    if let Some(selected_row) = list_box_clone.selected_row() {
+                        let current_index = selected_row.index() as usize;
+                        if current_index > 0 {
+                            let prev_index = current_index - 1;
+                            if let Some(prev_row) = list_box_clone.row_at_index(prev_index as i32) {
+                                list_box_clone.select_row(Some(&prev_row));
+                            }
+                        }
+                    } else {
+                        // Select last row if none selected
+                        let last_index = state.displayed_results.len().saturating_sub(1);
+                        if let Some(last_row) = list_box_clone.row_at_index(last_index as i32) {
+                            list_box_clone.select_row(Some(&last_row));
+                        }
+                    }
+                }
+                glib::Propagation::Stop
+            }
+            _ => glib::Propagation::Proceed,
         }
     });
-    window.add_controller(key_controller);
+    entry.add_controller(entry_key_controller);
 
     // Handle list box row activation
     let state_clone = state.clone();
@@ -315,11 +409,11 @@ pub fn build_ui(app: &Application, config: Config) {
         window_clone.close();
     });
 
-    // Initial search
+    // Initial state - compact, no results
     {
         let mut state = state.lock().unwrap();
         state.update_query("");
-        update_results_list(&list_box, &state.results);
+        // Don't populate results initially
     }
 
     // Assemble UI
@@ -327,7 +421,7 @@ pub fn build_ui(app: &Application, config: Config) {
     main_box.append(&scrolled);
     window.set_child(Some(&main_box));
 
-    // Show window (it will be centered by default)
+    // Show window
     window.present();
     entry.grab_focus();
 }
@@ -338,8 +432,8 @@ fn update_results_list(list_box: &ListBox, results: &[ResultItem]) {
         list_box.remove(&row);
     }
 
-    // Add new rows
-    for result in results.iter().take(10) {
+    // Add new rows (already limited to max_results in caller)
+    for result in results.iter() {
         let row = ListBoxRow::new();
         let row_box = GtkBox::builder()
             .orientation(gtk::Orientation::Horizontal)
@@ -374,4 +468,3 @@ fn update_results_list(list_box: &ListBox, results: &[ResultItem]) {
         list_box.append(&row);
     }
 }
-
