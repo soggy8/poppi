@@ -7,7 +7,7 @@ use crate::terminal::Terminal;
 use gtk::prelude::*;
 use gtk::glib;
 use gtk::gdk;
-use gtk::{Application, Entry, ListBox, ListBoxRow, Box as GtkBox, Label, Window, ScrolledWindow, EventControllerKey};
+use gtk::{Application, Entry, ListBox, ListBoxRow, Box as GtkBox, Label, Window, ScrolledWindow, EventControllerKey, Grid, Button};
 use gtk4_layer_shell::{Layer, Edge, LayerShell};
 use std::sync::{Arc, Mutex};
 use std::io::Write;
@@ -267,8 +267,23 @@ pub fn build_ui(app: &Application, config: Config) {
 
     // Results list
     let list_box = ListBox::new();
+    // Grid for emoji display
+    let emoji_grid = Grid::new();
+    emoji_grid.set_row_spacing(8);
+    emoji_grid.set_column_spacing(8);
+    emoji_grid.set_margin_start(10);
+    emoji_grid.set_margin_end(10);
+    emoji_grid.set_margin_top(10);
+    emoji_grid.set_margin_bottom(10);
+    
+    // Container box that can hold either list_box or emoji_grid
+    let results_container = GtkBox::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .build();
+    results_container.append(&list_box);
+    
     let scrolled = ScrolledWindow::builder()
-        .child(&list_box)
+        .child(&results_container)
         .min_content_width(window_width - 40)
         .hscrollbar_policy(gtk::PolicyType::Never)
         .vscrollbar_policy(gtk::PolicyType::Never)
@@ -379,6 +394,24 @@ pub fn build_ui(app: &Application, config: Config) {
             color: {};
             font-size: {}pt;
         }}
+        
+        button.emoji-button {{
+            background-color: transparent;
+            border: none;
+            border-radius: 0px;
+            padding: 8px;
+            font-size: 24px;
+            transition: background-color 0.15s ease;
+        }}
+        
+        button.emoji-button:hover {{
+            background-color: rgba(40, 40, 40, 0.8);
+        }}
+        
+        button.emoji-button.selected {{
+            background-color: rgba(40, 40, 40, 0.95);
+            border: 1px solid rgba(255, 255, 255, 0.15);
+        }}
         "#,
         config.theme.background_color,
         config.theme.font_size,
@@ -400,6 +433,8 @@ pub fn build_ui(app: &Application, config: Config) {
     // Update results when entry changes and adjust window height
     let state_clone = state.clone();
     let list_box_clone = list_box.clone();
+    let emoji_grid_clone = emoji_grid.clone();
+    let results_container_clone = results_container.clone();
     let scrolled_clone = scrolled.clone();
     let window_clone = window.clone();
     let row_height_clone = row_height;
@@ -411,12 +446,17 @@ pub fn build_ui(app: &Application, config: Config) {
         let mut state = state_clone.lock().unwrap();
         state.update_query(&query);
         
+        // Check if emoji mode
+        let is_emoji_mode = matches!(state.current_mode, Mode::Emoji);
+        let limit = if is_emoji_mode { 30 } else { max_results_clone };
+        
         // Limit results to max_results (5) and store in displayed_results
         // Build displayed_results in one step to avoid borrowing issues
-        let displayed: Vec<_> = state.results.iter().take(max_results_clone).cloned().collect();
+        let displayed: Vec<_> = state.results.iter().take(limit).cloned().collect();
         state.displayed_results = displayed.clone();
         state.selected_index = 0; // Reset selection when query changes
-        update_results_list(&list_box_clone, &displayed);
+        let selected_idx = state.selected_index;
+        update_results_list(&list_box_clone, &emoji_grid_clone, &results_container_clone, &displayed, is_emoji_mode, &window_clone, selected_idx);
         
         // Clear selection when results change
         list_box_clone.unselect_all();
@@ -426,7 +466,13 @@ pub fn build_ui(app: &Application, config: Config) {
         if num_results > 0 {
             // Show results and adjust height
             scrolled_clone.set_visible(true);
-            let total_height = entry_height_clone + (num_results as i32 * row_height_clone) + 20; // +20 for margins/spacing
+            let total_height = if is_emoji_mode {
+                // For emoji grid, calculate height based on grid rows (assuming 8 columns)
+                let rows = (num_results + 7) / 8; // Round up division
+                entry_height_clone + (rows as i32 * 50) + 40
+            } else {
+                entry_height_clone + (num_results as i32 * row_height_clone) + 20
+            };
             window_clone.set_default_size(window_width_clone, total_height);
             window_clone.set_size_request(window_width_clone, total_height);
         } else {
@@ -441,14 +487,22 @@ pub fn build_ui(app: &Application, config: Config) {
     let state_clone = state.clone();
     let window_clone = window.clone();
     let list_box_clone = list_box.clone();
+    let emoji_grid_clone = emoji_grid.clone();
+    let results_container_clone = results_container.clone();
     entry.connect_activate(move |_entry| {
         let state = state_clone.lock().unwrap();
         if !state.displayed_results.is_empty() {
-            // Get selected row or use first item
-            let selected_index = if let Some(selected_row) = list_box_clone.selected_row() {
-                selected_row.index() as usize
+            // Check if emoji mode
+            let is_emoji_mode = matches!(state.current_mode, Mode::Emoji);
+            let selected_index = if is_emoji_mode {
+                state.selected_index
             } else {
-                0
+                // Get selected row or use first item
+                if let Some(selected_row) = list_box_clone.selected_row() {
+                    selected_row.index() as usize
+                } else {
+                    0
+                }
             };
             if let Err(e) = state.execute_selected(selected_index) {
                 eprintln!("Error executing: {}", e);
@@ -461,6 +515,8 @@ pub fn build_ui(app: &Application, config: Config) {
     let entry_key_controller = EventControllerKey::new();
     let window_clone = window.clone();
     let list_box_clone = list_box.clone();
+    let emoji_grid_clone = emoji_grid.clone();
+    let results_container_clone = results_container.clone();
     let state_clone = state.clone();
     entry_key_controller.connect_key_pressed(move |_, keyval, _, _| {
         match keyval {
@@ -470,45 +526,107 @@ pub fn build_ui(app: &Application, config: Config) {
                 glib::Propagation::Stop
             }
             gdk::Key::Down | gdk::Key::KP_Down => {
-                // Move selection down
-                let state = state_clone.lock().unwrap();
+                let mut state = state_clone.lock().unwrap();
+                let is_emoji_mode = matches!(state.current_mode, Mode::Emoji);
                 if !state.displayed_results.is_empty() {
-                    if let Some(selected_row) = list_box_clone.selected_row() {
-                        let current_index = selected_row.index() as usize;
-                        let next_index = (current_index + 1).min(state.displayed_results.len() - 1);
-                        if let Some(next_row) = list_box_clone.row_at_index(next_index as i32) {
-                            list_box_clone.select_row(Some(&next_row));
-                        }
+                    if is_emoji_mode {
+                        // Grid navigation: move down (8 columns)
+                        let columns = 8;
+                        let max_index = state.displayed_results.len().saturating_sub(1);
+                        let new_index = (state.selected_index + columns).min(max_index);
+                        state.selected_index = new_index;
+                        // Update UI
+                        let displayed: Vec<_> = state.displayed_results.clone();
+                        let selected_idx = state.selected_index;
+                        drop(state);
+                        update_results_list(&list_box_clone, &emoji_grid_clone, &results_container_clone, &displayed, is_emoji_mode, &window_clone, selected_idx);
                     } else {
-                        // Select first row if none selected
-                        if let Some(first_row) = list_box_clone.row_at_index(0) {
-                            list_box_clone.select_row(Some(&first_row));
+                        // List navigation
+                        if let Some(selected_row) = list_box_clone.selected_row() {
+                            let current_index = selected_row.index() as usize;
+                            let next_index = (current_index + 1).min(state.displayed_results.len() - 1);
+                            if let Some(next_row) = list_box_clone.row_at_index(next_index as i32) {
+                                list_box_clone.select_row(Some(&next_row));
+                            }
+                        } else {
+                            // Select first row if none selected
+                            if let Some(first_row) = list_box_clone.row_at_index(0) {
+                                list_box_clone.select_row(Some(&first_row));
+                            }
                         }
                     }
                 }
                 glib::Propagation::Stop
             }
             gdk::Key::Up | gdk::Key::KP_Up => {
-                // Move selection up
-                let state = state_clone.lock().unwrap();
+                let mut state = state_clone.lock().unwrap();
+                let is_emoji_mode = matches!(state.current_mode, Mode::Emoji);
                 if !state.displayed_results.is_empty() {
-                    if let Some(selected_row) = list_box_clone.selected_row() {
-                        let current_index = selected_row.index() as usize;
-                        if current_index > 0 {
-                            let prev_index = current_index - 1;
-                            if let Some(prev_row) = list_box_clone.row_at_index(prev_index as i32) {
-                                list_box_clone.select_row(Some(&prev_row));
-                            }
-                        }
+                    if is_emoji_mode {
+                        // Grid navigation: move up (8 columns)
+                        let columns = 8;
+                        let new_index = state.selected_index.saturating_sub(columns);
+                        state.selected_index = new_index;
+                        // Update UI
+                        let displayed: Vec<_> = state.displayed_results.clone();
+                        let selected_idx = state.selected_index;
+                        drop(state);
+                        update_results_list(&list_box_clone, &emoji_grid_clone, &results_container_clone, &displayed, is_emoji_mode, &window_clone, selected_idx);
                     } else {
-                        // Select last row if none selected
-                        let last_index = state.displayed_results.len().saturating_sub(1);
-                        if let Some(last_row) = list_box_clone.row_at_index(last_index as i32) {
-                            list_box_clone.select_row(Some(&last_row));
+                        // List navigation
+                        if let Some(selected_row) = list_box_clone.selected_row() {
+                            let current_index = selected_row.index() as usize;
+                            if current_index > 0 {
+                                let prev_index = current_index - 1;
+                                if let Some(prev_row) = list_box_clone.row_at_index(prev_index as i32) {
+                                    list_box_clone.select_row(Some(&prev_row));
+                                }
+                            }
+                        } else {
+                            // Select last row if none selected
+                            let last_index = state.displayed_results.len().saturating_sub(1);
+                            if let Some(last_row) = list_box_clone.row_at_index(last_index as i32) {
+                                list_box_clone.select_row(Some(&last_row));
+                            }
                         }
                     }
                 }
                 glib::Propagation::Stop
+            }
+            gdk::Key::Right | gdk::Key::KP_Right => {
+                let mut state = state_clone.lock().unwrap();
+                let is_emoji_mode = matches!(state.current_mode, Mode::Emoji);
+                if is_emoji_mode && !state.displayed_results.is_empty() {
+                    // Grid navigation: move right
+                    let max_index = state.displayed_results.len().saturating_sub(1);
+                    let new_index = (state.selected_index + 1).min(max_index);
+                    state.selected_index = new_index;
+                    // Update UI
+                    let displayed: Vec<_> = state.displayed_results.clone();
+                    let selected_idx = state.selected_index;
+                    drop(state);
+                    update_results_list(&list_box_clone, &emoji_grid_clone, &results_container_clone, &displayed, is_emoji_mode, &window_clone, selected_idx);
+                    glib::Propagation::Stop
+                } else {
+                    glib::Propagation::Proceed
+                }
+            }
+            gdk::Key::Left | gdk::Key::KP_Left => {
+                let mut state = state_clone.lock().unwrap();
+                let is_emoji_mode = matches!(state.current_mode, Mode::Emoji);
+                if is_emoji_mode && !state.displayed_results.is_empty() {
+                    // Grid navigation: move left
+                    let new_index = state.selected_index.saturating_sub(1);
+                    state.selected_index = new_index;
+                    // Update UI
+                    let displayed: Vec<_> = state.displayed_results.clone();
+                    let selected_idx = state.selected_index;
+                    drop(state);
+                    update_results_list(&list_box_clone, &emoji_grid_clone, &results_container_clone, &displayed, is_emoji_mode, &window_clone, selected_idx);
+                    glib::Propagation::Stop
+                } else {
+                    glib::Propagation::Proceed
+                }
             }
             _ => glib::Propagation::Proceed,
         }
@@ -573,45 +691,95 @@ pub fn build_ui(app: &Application, config: Config) {
     });
 }
 
-fn update_results_list(list_box: &ListBox, results: &[ResultItem]) {
-    // Clear existing rows
-    while let Some(row) = list_box.row_at_index(0) {
-        list_box.remove(&row);
+fn update_results_list(list_box: &ListBox, emoji_grid: &Grid, results_container: &GtkBox, results: &[ResultItem], is_emoji_mode: bool, window: &Window, selected_index: usize) {
+    // Clear existing content
+    while let Some(child) = results_container.first_child() {
+        results_container.remove(&child);
     }
+    
+    // Remove all children from grid
+    while let Some(child) = emoji_grid.first_child() {
+        emoji_grid.remove(&child);
+    }
+    
+    if is_emoji_mode {
+        // Display emojis in a grid
+        let columns = 8;
+        let mut row = 0;
+        let mut col = 0;
+        
+        for result in results.iter() {
+            if let ResultItem::Emoji(emoji) = result {
+                // Create button with emoji
+                let button = Button::builder()
+                    .label(&emoji.emoji)
+                    .build();
+                button.add_css_class("emoji-button");
+                button.set_hexpand(true);
+                button.set_vexpand(true);
+                
+                // Connect click handler
+                let emoji_emoji = emoji.emoji.clone();
+                let window_clone = window.clone();
+                button.connect_clicked(move |_| {
+                    let _ = crate::emoji_picker::EmojiPicker::insert_emoji(&emoji_emoji);
+                    window_clone.close();
+                });
+                
+                emoji_grid.attach(&button, col, row, 1, 1);
+                
+                col += 1;
+                if col >= columns {
+                    col = 0;
+                    row += 1;
+                }
+            }
+        }
+        
+        results_container.append(emoji_grid);
+    } else {
+        // Clear existing rows from list_box
+        while let Some(row) = list_box.row_at_index(0) {
+            list_box.remove(&row);
+        }
+        
+        // Display regular results in list
+        for result in results.iter() {
+            let row = ListBoxRow::new();
+            let row_box = GtkBox::builder()
+                .orientation(gtk::Orientation::Horizontal)
+                .spacing(10)
+                .margin_start(10)
+                .margin_end(10)
+                .margin_top(5)
+                .margin_bottom(5)
+                .build();
 
-    // Add new rows (already limited to max_results in caller)
-    for result in results.iter() {
-        let row = ListBoxRow::new();
-        let row_box = GtkBox::builder()
-            .orientation(gtk::Orientation::Horizontal)
-            .spacing(10)
-            .margin_start(10)
-            .margin_end(10)
-            .margin_top(5)
-            .margin_bottom(5)
-            .build();
+            let label = match result {
+                ResultItem::App(app) => {
+                    Label::new(Some(&format!("{}", app.name)))
+                }
+                ResultItem::CalculatorResult(result) => {
+                    Label::new(Some(&format!("= {}", result)))
+                }
+                ResultItem::Emoji(_) => {
+                    // Should not happen in non-emoji mode, but handle it
+                    Label::new(Some(""))
+                }
+                ResultItem::TerminalCommand(cmd) => {
+                    Label::new(Some(&format!("▶ {}", cmd)))
+                }
+                ResultItem::SearchQuery { engine, query } => {
+                    Label::new(Some(&format!("🌐 Search {}: {}", engine, query)))
+                }
+            };
 
-        let label = match result {
-            ResultItem::App(app) => {
-                Label::new(Some(&format!("{}", app.name)))
-            }
-            ResultItem::CalculatorResult(result) => {
-                Label::new(Some(&format!("= {}", result)))
-            }
-            ResultItem::Emoji(emoji) => {
-                Label::new(Some(&format!("{} {}", emoji.emoji, emoji.name)))
-            }
-            ResultItem::TerminalCommand(cmd) => {
-                Label::new(Some(&format!("▶ {}", cmd)))
-            }
-            ResultItem::SearchQuery { engine, query } => {
-                Label::new(Some(&format!("🌐 Search {}: {}", engine, query)))
-            }
-        };
-
-        label.set_xalign(0.0);
-        row_box.append(&label);
-        row.set_child(Some(&row_box));
-        list_box.append(&row);
+            label.set_xalign(0.0);
+            row_box.append(&label);
+            row.set_child(Some(&row_box));
+            list_box.append(&row);
+        }
+        
+        results_container.append(list_box);
     }
 }
