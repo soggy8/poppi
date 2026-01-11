@@ -16,7 +16,7 @@ fn main() -> glib::ExitCode {
     // Load configuration
     let config = config::Config::load().unwrap_or_default();
 
-    // Create application with NON_UNIQUE to bypass single-instance D-Bus check
+    // Create application - NON_UNIQUE for reliable startup
     let app = Application::builder()
         .application_id(APP_ID)
         .flags(gio::ApplicationFlags::NON_UNIQUE)

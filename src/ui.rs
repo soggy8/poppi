@@ -359,6 +359,7 @@ pub fn build_ui(app: &Application, config: Config) {
     entry_key_controller.connect_key_pressed(move |_, keyval, _, _| {
         match keyval {
             gdk::Key::Escape => {
+                // Close window
                 window_clone.close();
                 glib::Propagation::Stop
             }
@@ -432,7 +433,7 @@ pub fn build_ui(app: &Application, config: Config) {
     main_box.append(&scrolled);
     window.set_child(Some(&main_box));
 
-    // Show window immediately (fast launch!)
+    // Show window immediately
     window.present();
     entry.grab_focus();
 
