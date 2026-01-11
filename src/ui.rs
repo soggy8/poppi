@@ -8,6 +8,7 @@ use gtk::prelude::*;
 use gtk::glib;
 use gtk::gdk;
 use gtk::{Application, Entry, ListBox, ListBoxRow, Box as GtkBox, Label, Window, ScrolledWindow, EventControllerKey};
+use gtk4_layer_shell::{Layer, Edge, LayerShell};
 use std::sync::{Arc, Mutex};
 use std::io::Write;
 use std::thread;
@@ -147,11 +148,31 @@ impl LauncherState {
 
         // Default: app search
         self.current_mode = Mode::Apps;
-        self.results = self.app_launcher
+        let app_results: Vec<ResultItem> = self.app_launcher
             .search(query)
             .into_iter()
             .map(|(app, _)| ResultItem::App((*app).clone()))
             .collect();
+        
+        // If no app results found, add search options as fallback
+        if app_results.is_empty() && !query.is_empty() {
+            self.results = vec![
+                ResultItem::SearchQuery {
+                    engine: "youtube".to_string(),
+                    query: query.to_string(),
+                },
+                ResultItem::SearchQuery {
+                    engine: "google".to_string(),
+                    query: query.to_string(),
+                },
+                ResultItem::SearchQuery {
+                    engine: "chatgpt".to_string(),
+                    query: query.to_string(),
+                },
+            ];
+        } else {
+            self.results = app_results;
+        }
     }
 
     pub fn execute_selected(&self, index: usize) -> Result<(), Box<dyn std::error::Error>> {
@@ -215,14 +236,28 @@ pub fn build_ui(app: &Application, config: Config) {
         .resizable(false)
         .build();
 
+    // Initialize layer shell for GNOME/Wayland positioning
+    window.init_layer_shell();
+    window.set_layer(Layer::Overlay); // Above everything
+    window.set_keyboard_mode(gtk4_layer_shell::KeyboardMode::Exclusive);
+    
+    // Anchor to top edge, centered horizontally
+    window.set_anchor(Edge::Top, true);
+    window.set_anchor(Edge::Left, false);
+    window.set_anchor(Edge::Right, false);
+    window.set_anchor(Edge::Bottom, false);
+    
+    // Set margin from top (150px from top of screen)
+    window.set_margin(Edge::Top, 150);
+
     // Main container
     let main_box = GtkBox::builder()
         .orientation(gtk::Orientation::Vertical)
-        .spacing(10)
-        .margin_top(10)
-        .margin_bottom(10)
-        .margin_start(10)
-        .margin_end(10)
+        .spacing(3)
+        .margin_top(3)
+        .margin_bottom(3)
+        .margin_start(3)
+        .margin_end(3)
         .build();
 
     // Search entry
@@ -242,42 +277,113 @@ pub fn build_ui(app: &Application, config: Config) {
     // Initially hide the results list
     scrolled.set_visible(false);
 
-    // Apply CSS styling
+    // Apply CSS styling with animations
     let css = format!(
         r#"
+        @keyframes fadeIn {{
+            from {{
+                opacity: 0;
+            }}
+            to {{
+                opacity: 1;
+            }}
+        }}
+        
+        @keyframes slideDown {{
+            from {{
+                opacity: 0;
+                transform: translateY(-10px);
+            }}
+            to {{
+                opacity: 1;
+                transform: translateY(0);
+            }}
+        }}
+        
         window {{
             background-color: {};
-            border-radius: {}px;
+            border-radius: 0px;
+            border: 0.5px solid rgba(46, 46, 46, 0.2);
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.8);
+            animation: fadeIn 0.15s ease-out;
         }}
+        
+        decoration {{
+            border: none;
+        }}
+        
         entry {{
-            background-color: rgba(255, 255, 255, 0.1);
-            border: 1px solid rgba(255, 255, 255, 0.2);
-            border-radius: 8px;
-            padding: 10px;
+            background-color: rgba(20, 20, 20, 0.9);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 0px;
+            padding: 12px;
             font-size: {}pt;
             color: {};
+            transition: border-color 0.2s ease, background-color 0.2s ease;
         }}
+        
+        entry:focus {{
+            border-color: {};
+            background-color: rgba(15, 15, 15, 0.95);
+            box-shadow: inset 0 0 0 1px {};
+        }}
+        
         list {{
             background-color: transparent;
         }}
+        
         row {{
-            background-color: rgba(255, 255, 255, 0.05);
-            border-radius: 4px;
-            padding: 10px;
-            margin: 2px;
+            background-color: rgba(20, 20, 20, 0.6);
+            border: none;
+            border-top: 1px solid rgba(255, 255, 255, 0.05);
+            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+            border-radius: 0px;
+            padding: 12px;
+            margin: 0px;
+            transition: background-color 0.15s ease, transform 0.1s ease;
+            animation: slideDown 0.2s ease-out backwards;
         }}
+        
+        row:nth-child(1) {{
+            animation-delay: 0.02s;
+        }}
+        
+        row:nth-child(2) {{
+            animation-delay: 0.04s;
+        }}
+        
+        row:nth-child(3) {{
+            animation-delay: 0.06s;
+        }}
+        
+        row:nth-child(4) {{
+            animation-delay: 0.08s;
+        }}
+        
+        row:nth-child(5) {{
+            animation-delay: 0.10s;
+        }}
+        
+        row:hover {{
+            background-color: rgba(30, 30, 30, 0.8);
+            transform: translateX(2px);
+        }}
+        
         row:selected {{
-            background-color: {};
+            background-color: rgba(40, 40, 40, 0.95);
+            border-top: 1px solid rgba(255, 255, 255, 0.15);
+            border-bottom: 1px solid rgba(255, 255, 255, 0.15);
         }}
+        
         label {{
             color: {};
             font-size: {}pt;
         }}
         "#,
         config.theme.background_color,
-        config.theme.border_radius,
         config.theme.font_size,
         config.theme.text_color,
+        config.theme.accent_color,
         config.theme.accent_color,
         config.theme.text_color,
         config.theme.font_size,
@@ -433,9 +539,24 @@ pub fn build_ui(app: &Application, config: Config) {
     main_box.append(&scrolled);
     window.set_child(Some(&main_box));
 
-    // Show window immediately
+    // Show window with fade-in animation
+    window.set_opacity(0.0);
     window.present();
     entry.grab_focus();
+    
+    // Animate window fade-in
+    let window_clone = window.clone();
+    let mut opacity = 0.0;
+    let step = 0.05;
+    glib::timeout_add_local(std::time::Duration::from_millis(10), move || {
+        opacity += step;
+        if opacity >= 1.0 {
+            window_clone.set_opacity(1.0);
+            return glib::ControlFlow::Break;
+        }
+        window_clone.set_opacity(opacity);
+        glib::ControlFlow::Continue
+    });
 
     // Load apps in background thread after window appears (lazy loading)
     let state_clone = state.clone();

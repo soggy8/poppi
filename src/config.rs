@@ -43,10 +43,10 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             theme: ThemeConfig {
-                background_color: "#2e2e2e".to_string(),
-                text_color: "#ffffff".to_string(),
-                accent_color: "#5294e2".to_string(),
-                border_radius: 12.0,
+                background_color: "#0a0a0a".to_string(), // Almost black
+                text_color: "#e0e0e0".to_string(), // Slightly softer white
+                accent_color: "#4a9eff".to_string(), // Bright blue accent
+                border_radius: 0.5, // Completely boxy, no rounding
                 font_size: 16,
                 width: 800,
                 height: 600,
