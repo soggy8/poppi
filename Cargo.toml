@@ -1,0 +1,22 @@
+[package]
+name = "poppi_launcher"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+gtk = { version = "0.9", package = "gtk4", features = ["v4_12"] }
+glib = { version = "0.21", features = [] }
+gio = { version = "0.21", features = ["v2_80"] }
+tokio = { version = "1", features = ["full"] }
+fuzzy-matcher = "0.3"
+serde = { version = "1.0", features = ["derive"] }
+toml = { version = "0.8", features = ["preserve_order"] }
+dirs = "5.0"
+meval = "0.2"
+urlencoding = "2.1"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+
