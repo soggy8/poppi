@@ -1,43 +1,67 @@
-# Poppi Launcher
+# 🚀 Poppi Launcher
 
-A fast, modern, and customizable application launcher for the GNOME desktop environment, built with Rust and GTK4. Inspired by Albert launcher, Poppi provides a minimal UI with powerful search capabilities.
+<div align="center">
 
-## Features
+![Rust](https://img.shields.io/badge/Rust-1.70%2B-orange?logo=rust)
+![GTK4](https://img.shields.io/badge/GTK4-4.12%2B-blue?logo=gnome)
+![License](https://img.shields.io/badge/License-MIT-green)
+![Platform](https://img.shields.io/badge/Platform-Linux-lightgrey?logo=linux)
 
-- **Application Search & Launch**: Fast fuzzy search through installed desktop applications
-- **Calculator**: Built-in calculator for quick computations (e.g., `2+2`, `10*5`)
-- **Emoji Picker**: Search and insert emojis directly into the active text field (prefix: `emoji` or `:`)
-- **Terminal Commands**: Execute terminal commands directly (opens terminal and runs command)
-- **Web Search**: Quick searches on YouTube (`yt`), ChatGPT (`gpt`), and Google (`google`)
-- **Customizable**: Theme, colors, fonts, and shortcuts are all configurable
+**A fast, modern, and customizable application launcher for GNOME desktop environment**
 
-## Prerequisites
+Inspired by Albert launcher, built with Rust and GTK4 for optimal performance
 
-### System Dependencies
+[Features](#-features) • [Installation](#-installation) • [Usage](#-usage) • [Configuration](#-configuration) • [Contributing](#-contributing)
 
-On Fedora/RHEL:
+</div>
+
+---
+
+## ✨ Features
+
+- **🎯 Application Search & Launch**: Fast fuzzy search through installed desktop applications
+- **🔢 Calculator**: Built-in calculator for quick computations (e.g., `2+2`, `10*5`)
+- **😀 Emoji Picker**: Search and insert emojis directly into the active text field (prefix: `emoji` or `:`)
+- **💻 Terminal Commands**: Execute terminal commands directly (opens terminal and runs command)
+- **🌐 Web Search**: Quick searches on YouTube (`yt`), ChatGPT (`gpt`), and Google (`google`)
+- **⚡ Fast & Lightweight**: Built with Rust for optimal performance
+- **🎨 Customizable**: Theme, colors, fonts, and shortcuts are all configurable via TOML
+- **📐 Compact UI**: Minimal search bar that dynamically expands to show results
+- **⌨️ Keyboard Navigation**: Full arrow key support for navigation
+
+## 📸 Screenshots
+
+*Coming soon - screenshots of Poppi Launcher in action*
+
+## 🛠️ Installation
+
+### Prerequisites
+
+#### System Dependencies
+
+**On Fedora/RHEL:**
 ```bash
 sudo dnf install gtk4-devel pango-devel cairo-devel glib2-devel gdk-pixbuf2-devel
 ```
 
-On Ubuntu/Debian:
+**On Ubuntu/Debian:**
 ```bash
 sudo apt install libgtk-4-dev libpango1.0-dev libcairo2-dev libglib2.0-dev libgdk-pixbuf2.0-dev
 ```
 
-On Arch Linux:
+**On Arch Linux:**
 ```bash
 sudo pacman -S gtk4 pango cairo glib2 gdk-pixbuf2
 ```
 
-### Rust
+#### Rust
 
 Make sure you have Rust installed. If not:
 ```bash
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 ```
 
-### Optional Dependencies
+#### Optional Dependencies
 
 For emoji insertion (X11):
 ```bash
@@ -63,22 +87,38 @@ sudo apt install xclip
 sudo pacman -S xclip
 ```
 
-## Building
+### Building from Source
 
 ```bash
-git clone <repository-url>
-cd poppi_launcher
+git clone https://github.com/soggy8/poppi.git
+cd poppi
 cargo build --release
 ```
 
 The binary will be in `target/release/poppi_launcher`.
 
-## Usage
+### Installation
+
+After building, you can install it system-wide:
+
+```bash
+sudo cp target/release/poppi_launcher /usr/local/bin/
+```
+
+Or add it to your local bin:
+
+```bash
+mkdir -p ~/.local/bin
+cp target/release/poppi_launcher ~/.local/bin/
+export PATH="$HOME/.local/bin:$PATH"  # Add to your ~/.bashrc or ~/.zshrc
+```
+
+## 🚀 Usage
 
 ### Running
 
 ```bash
-cargo run --release
+poppi_launcher
 # or
 ./target/release/poppi_launcher
 ```
@@ -87,24 +127,36 @@ cargo run --release
 
 - **Enter**: Execute the selected item
 - **Escape**: Close the launcher
-- **Arrow Keys**: Navigate through results
+- **Arrow Up/Down**: Navigate through results
+- **Click**: Launch an application by clicking on it
 
 ### Search Modes
 
-1. **Applications**: Just type the app name (default mode)
-2. **Calculator**: Type a mathematical expression (e.g., `2+2`, `10*5-3`)
-3. **Emoji**: Prefix with `emoji` or `:` (e.g., `emoji smile`, `:heart`)
-4. **Terminal**: Type a terminal command (e.g., `ls`, `git status`)
-5. **Web Search**: 
-   - YouTube: `yt <query>` or `youtube <query>`
-   - ChatGPT: `gpt <query>` or `chatgpt <query>`
-   - Google: `google <query>`
+1. **Applications** (default): Just type the app name
+   - Example: `firefox`, `code`, `terminal`
 
-## Configuration
+2. **Calculator**: Type a mathematical expression
+   - Example: `2+2`, `10*5-3`, `(5+3)*2`
+
+3. **Emoji**: Prefix with `emoji` or `:`
+   - Example: `emoji smile`, `:heart`, `emoji fire`
+
+4. **Terminal Commands**: Type a terminal command
+   - Example: `ls`, `git status`, `docker ps`
+
+5. **Web Search**: 
+   - **YouTube**: `yt <query>` or `youtube <query>`
+     - Example: `yt rust tutorial`
+   - **ChatGPT**: `gpt <query>` or `chatgpt <query>`
+     - Example: `gpt hello`
+   - **Google**: `google <query>`
+     - Example: `google rust programming`
+
+## ⚙️ Configuration
 
 Configuration is stored in `~/.config/poppi_launcher/config.toml`. The configuration file is automatically created on first run with default values.
 
-Example configuration:
+### Example Configuration
 
 ```toml
 [theme]
@@ -131,75 +183,53 @@ enabled = true
 ### Customization Options
 
 - **Theme Colors**: Customize background, text, and accent colors
-- **Window Size**: Adjust width and height
+- **Window Size**: Adjust width and height (for expanded view)
 - **Font Size**: Change the font size
 - **Border Radius**: Round the window corners
 - **Search Engines**: Enable/disable YouTube and ChatGPT search
 
-## Features in Detail
+## 📋 Requirements
 
-### Application Launcher
+- **Rust**: 1.70 or later
+- **GTK4**: 4.12 or later
+- **GNOME**: Desktop environment (or any GTK4-compatible desktop)
+- **Linux**: Tested on Fedora, Ubuntu, and Arch Linux
 
-Searches through all installed desktop applications using fuzzy matching. Results are sorted by relevance.
+## 🏗️ Architecture
 
-### Calculator
+See [ARCHITECTURE.md](ARCHITECTURE.md) for detailed information about the project structure and architecture.
 
-Supports basic arithmetic operations:
-- Addition: `+`
-- Subtraction: `-`
-- Multiplication: `*` or `×`
-- Division: `/` or `÷`
-- Parentheses for grouping
-
-### Emoji Picker
-
-Search emojis by name or keywords. Selected emojis are automatically inserted into the currently focused text field using `xdotool` (X11) or clipboard (fallback).
-
-### Terminal Commands
-
-Recognizes common terminal commands and executes them in your default terminal emulator. The launcher detects:
-- `gnome-terminal`
-- `tilix`
-- `alacritty`
-- `kitty`
-- `konsole`
-- `xterm`
-- And more...
-
-### Web Search
-
-Quick access to:
-- **YouTube**: Search videos directly
-- **ChatGPT**: Open ChatGPT (query can be pasted)
-- **Google**: Web search
-
-## Limitations
-
-- Emoji insertion requires `xdotool` on X11. Wayland support is planned.
-- Terminal command detection uses heuristics and may not recognize all commands.
-- Desktop entry parsing is simplified and may not handle all edge cases.
-
-## Roadmap
-
-- [ ] Wayland support for emoji insertion
-- [ ] More sophisticated desktop entry parsing
-- [ ] Plugin system for extending functionality
-- [ ] History of recent searches and launches
-- [ ] File search
-- [ ] Custom command aliases
-- [ ] Keyboard shortcut configuration UI
-- [ ] Flatpak packaging
-
-## Contributing
+## 🤝 Contributing
 
 Contributions are welcome! Please feel free to submit a Pull Request.
 
-## License
+1. Fork the repository
+2. Create your feature branch (`git checkout -b feature/amazing-feature`)
+3. Commit your changes (`git commit -m 'Add some amazing feature'`)
+4. Push to the branch (`git push origin feature/amazing-feature`)
+5. Open a Pull Request
 
-[Add your license here]
+## 📝 License
 
-## Acknowledgments
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
+## 🙏 Acknowledgments
 
 - Inspired by [Albert Launcher](https://github.com/albertlauncher/albert)
 - Built with [GTK4](https://www.gtk.org/) and [Rust](https://www.rust-lang.org/)
+- Thanks to the open-source community for amazing tools and libraries
 
+## 📧 Contact
+
+- **GitHub**: [@soggy8](https://github.com/soggy8)
+- **Repository**: https://github.com/soggy8/poppi
+
+---
+
+<div align="center">
+
+**Made with ❤️ and Rust**
+
+⭐ Star this repo if you find it useful!
+
+</div>
