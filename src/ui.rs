@@ -7,8 +7,7 @@ use crate::terminal::Terminal;
 use gtk::prelude::*;
 use gtk::glib;
 use gtk::gdk;
-use gtk::{Application, Entry, ListBox, ListBoxRow, Box as GtkBox, Label, Window, ScrolledWindow, EventControllerKey, Grid, Button};
-use gtk4_layer_shell::{Layer, Edge, LayerShell};
+use gtk::{Application, Entry, ListBox, ListBoxRow, Box as GtkBox, Label, Window, ScrolledWindow, EventControllerKey, Grid, Button, Image};
 use std::sync::{Arc, Mutex};
 use std::io::Write;
 use std::thread;
@@ -226,39 +225,26 @@ pub fn build_ui(app: &Application, config: Config) {
     let row_height = 50; // Approximate height per result row
     let max_results = 5;
 
-    // Create main window - fixed width
+    // Create main window - fixed width, tall height for positioning (GNOME centers windows)
+    // The window background is transparent so only the content shows
+    let window_height = 500;
+    
     let window = Window::builder()
         .application(app)
         .title("Poppi Launcher")
         .default_width(window_width)
-        .default_height(entry_height)
+        .default_height(window_height)
         .decorated(false)
         .resizable(false)
         .build();
 
-    // Initialize layer shell for GNOME/Wayland positioning
-    window.init_layer_shell();
-    window.set_layer(Layer::Overlay); // Above everything
-    window.set_keyboard_mode(gtk4_layer_shell::KeyboardMode::Exclusive);
-    
-    // Anchor to top edge, centered horizontally
-    window.set_anchor(Edge::Top, true);
-    window.set_anchor(Edge::Left, false);
-    window.set_anchor(Edge::Right, false);
-    window.set_anchor(Edge::Bottom, false);
-    
-    // Set margin from top (150px from top of screen)
-    window.set_margin(Edge::Top, 150);
-
-    // Main container
+    // Main container - align content to top
     let main_box = GtkBox::builder()
         .orientation(gtk::Orientation::Vertical)
-        .spacing(3)
-        .margin_top(3)
-        .margin_bottom(3)
-        .margin_start(3)
-        .margin_end(3)
+        .spacing(1)
+        .valign(gtk::Align::Start) // Align content to top
         .build();
+    main_box.add_css_class("launcher-box");
 
     // Search entry
     let entry = Entry::builder()
@@ -316,6 +302,11 @@ pub fn build_ui(app: &Application, config: Config) {
         }}
         
         window {{
+            background-color: transparent;
+            border: none;
+        }}
+        
+        .launcher-box {{
             background-color: {};
             border-radius: 0px;
             border: 0.5px solid rgba(46, 46, 46, 0.2);
@@ -395,8 +386,24 @@ pub fn build_ui(app: &Application, config: Config) {
             font-size: {}pt;
         }}
         
+        .app-name {{
+            color: {};
+            font-size: {}pt;
+            font-weight: 500;
+        }}
+        
+        .app-description {{
+            color: rgba(255, 255, 255, 0.5);
+            font-size: 9pt;
+        }}
+        
+        .app-icon {{
+            opacity: 0.9;
+        }}
+        
         button.emoji-button {{
             background-color: transparent;
+            background: transparent;
             border: none;
             border-radius: 0px;
             padding: 8px;
@@ -412,12 +419,23 @@ pub fn build_ui(app: &Application, config: Config) {
             background-color: rgba(40, 40, 40, 0.95);
             border: 1px solid rgba(255, 255, 255, 0.15);
         }}
+        
+        button.emoji-button.emoji-placeholder {{
+            color: transparent;
+            background-color: transparent;
+        }}
+        
+        button.emoji-button.emoji-placeholder:hover {{
+            background-color: transparent;
+        }}
         "#,
         config.theme.background_color,
         config.theme.font_size,
         config.theme.text_color,
         config.theme.accent_color,
         config.theme.accent_color,
+        config.theme.text_color,
+        config.theme.font_size,
         config.theme.text_color,
         config.theme.font_size,
     );
@@ -448,7 +466,12 @@ pub fn build_ui(app: &Application, config: Config) {
         
         // Check if emoji mode
         let is_emoji_mode = matches!(state.current_mode, Mode::Emoji);
-        let limit = if is_emoji_mode { 30 } else { max_results_clone };
+        let limit = if is_emoji_mode { 
+            // Always show exactly 24 emojis (3 rows of 8)
+            24
+        } else { 
+            max_results_clone 
+        };
         
         // Limit results to max_results (5) and store in displayed_results
         // Build displayed_results in one step to avoid borrowing issues
@@ -513,6 +536,8 @@ pub fn build_ui(app: &Application, config: Config) {
 
     // Handle keyboard navigation (Escape, Arrow keys) on the entry
     let entry_key_controller = EventControllerKey::new();
+    // Set to capture phase to intercept keys before entry processes them
+    entry_key_controller.set_propagation_phase(gtk::PropagationPhase::Capture);
     let window_clone = window.clone();
     let list_box_clone = list_box.clone();
     let emoji_grid_clone = emoji_grid.clone();
@@ -597,9 +622,27 @@ pub fn build_ui(app: &Application, config: Config) {
                 let mut state = state_clone.lock().unwrap();
                 let is_emoji_mode = matches!(state.current_mode, Mode::Emoji);
                 if is_emoji_mode && !state.displayed_results.is_empty() {
-                    // Grid navigation: move right
+                    // Grid navigation: move right (wrap to next row if at end of row)
+                    let columns = 8;
                     let max_index = state.displayed_results.len().saturating_sub(1);
-                    let new_index = (state.selected_index + 1).min(max_index);
+                    let current_row = state.selected_index / columns;
+                    let current_col = state.selected_index % columns;
+                    
+                    // If at end of row, wrap to start of next row (if exists)
+                    let new_index = if current_col == columns - 1 {
+                        // At end of row, try to go to start of next row
+                        let next_row_start = (current_row + 1) * columns;
+                        if next_row_start <= max_index {
+                            next_row_start
+                        } else {
+                            // No next row, stay at current position
+                            state.selected_index
+                        }
+                    } else {
+                        // Not at end of row, just move right
+                        (state.selected_index + 1).min(max_index)
+                    };
+                    
                     state.selected_index = new_index;
                     // Update UI
                     let displayed: Vec<_> = state.displayed_results.clone();
@@ -615,8 +658,26 @@ pub fn build_ui(app: &Application, config: Config) {
                 let mut state = state_clone.lock().unwrap();
                 let is_emoji_mode = matches!(state.current_mode, Mode::Emoji);
                 if is_emoji_mode && !state.displayed_results.is_empty() {
-                    // Grid navigation: move left
-                    let new_index = state.selected_index.saturating_sub(1);
+                    // Grid navigation: move left (wrap to previous row if at start of row)
+                    let columns = 8;
+                    let current_row = state.selected_index / columns;
+                    let current_col = state.selected_index % columns;
+                    
+                    // If at start of row, wrap to end of previous row (if exists)
+                    let new_index = if current_col == 0 {
+                        // At start of row, try to go to end of previous row
+                        if current_row > 0 {
+                            let prev_row_end = (current_row * columns) - 1;
+                            prev_row_end.min(state.displayed_results.len().saturating_sub(1))
+                        } else {
+                            // No previous row, stay at current position
+                            state.selected_index
+                        }
+                    } else {
+                        // Not at start of row, just move left
+                        state.selected_index.saturating_sub(1)
+                    };
+                    
                     state.selected_index = new_index;
                     // Update UI
                     let displayed: Vec<_> = state.displayed_results.clone();
@@ -707,14 +768,22 @@ fn update_results_list(list_box: &ListBox, emoji_grid: &Grid, results_container:
         let columns = 8;
         let mut row = 0;
         let mut col = 0;
+        let mut emoji_count = 0;
         
-        for result in results.iter() {
+        for (index, result) in results.iter().enumerate() {
             if let ResultItem::Emoji(emoji) = result {
                 // Create button with emoji
                 let button = Button::builder()
                     .label(&emoji.emoji)
+                    .has_frame(false)
                     .build();
                 button.add_css_class("emoji-button");
+                
+                // Apply selected state if this is the selected index
+                if index == selected_index {
+                    button.add_css_class("selected");
+                }
+                
                 button.set_hexpand(true);
                 button.set_vexpand(true);
                 
@@ -728,11 +797,32 @@ fn update_results_list(list_box: &ListBox, emoji_grid: &Grid, results_container:
                 
                 emoji_grid.attach(&button, col, row, 1, 1);
                 
+                emoji_count += 1;
                 col += 1;
                 if col >= columns {
                     col = 0;
                     row += 1;
                 }
+            }
+        }
+        
+        // Fill remaining cells in the last row with empty placeholders to ensure full row
+        // After the loop, 'row' is the current row and 'col' is the current column
+        // If col > 0, it means the last row is not full, so we need to fill it
+        if col > 0 && col < columns {
+            for c in col..columns {
+                // Create a placeholder that takes up space but appears empty
+                // Use a space character so it has size, and make it non-interactive
+                let placeholder = Button::builder()
+                    .label(" ")  // Space character to ensure it takes up space
+                    .has_frame(false)
+                    .build();
+                placeholder.add_css_class("emoji-button");
+                placeholder.add_css_class("emoji-placeholder");
+                placeholder.set_hexpand(true);
+                placeholder.set_vexpand(true);
+                placeholder.set_sensitive(false); // Make it non-interactive
+                emoji_grid.attach(&placeholder, c as i32, row as i32, 1, 1);
             }
         }
         
@@ -748,34 +838,76 @@ fn update_results_list(list_box: &ListBox, emoji_grid: &Grid, results_container:
             let row = ListBoxRow::new();
             let row_box = GtkBox::builder()
                 .orientation(gtk::Orientation::Horizontal)
-                .spacing(10)
-                .margin_start(10)
-                .margin_end(10)
-                .margin_top(5)
-                .margin_bottom(5)
+                .spacing(12)
+                .margin_start(12)
+                .margin_end(12)
+                .margin_top(8)
+                .margin_bottom(8)
                 .build();
 
-            let label = match result {
+            match result {
                 ResultItem::App(app) => {
-                    Label::new(Some(&format!("{}", app.name)))
+                    // Create icon
+                    let icon_widget = if let Some(icon_name) = &app.icon {
+                        let image = Image::from_icon_name(icon_name);
+                        image.set_pixel_size(40);
+                        image.set_css_classes(&["app-icon"]);
+                        image
+                    } else {
+                        // Fallback: use a default icon or empty image
+                        let image = Image::new();
+                        image.set_pixel_size(40);
+                        image
+                    };
+                    
+                    // Create vertical box for name and description
+                    let text_box = GtkBox::builder()
+                        .orientation(gtk::Orientation::Vertical)
+                        .spacing(1)
+                        .valign(gtk::Align::Center)
+                        .build();
+                    
+                    // App name
+                    let name_label = Label::new(Some(&app.name));
+                    name_label.set_xalign(0.0);
+                    name_label.add_css_class("app-name");
+                    
+                    // App description (comment)
+                    let desc_text = app.comment.as_deref().unwrap_or("");
+                    let desc_label = Label::new(Some(desc_text));
+                    desc_label.set_xalign(0.0);
+                    desc_label.add_css_class("app-description");
+                    
+                    text_box.append(&name_label);
+                    if !desc_text.is_empty() {
+                        text_box.append(&desc_label);
+                    }
+                    
+                    row_box.append(&icon_widget);
+                    row_box.append(&text_box);
                 }
                 ResultItem::CalculatorResult(result) => {
-                    Label::new(Some(&format!("= {}", result)))
+                    let label = Label::new(Some(&format!("= {}", result)));
+                    label.set_xalign(0.0);
+                    row_box.append(&label);
                 }
                 ResultItem::Emoji(_) => {
                     // Should not happen in non-emoji mode, but handle it
-                    Label::new(Some(""))
+                    let label = Label::new(Some(""));
+                    row_box.append(&label);
                 }
                 ResultItem::TerminalCommand(cmd) => {
-                    Label::new(Some(&format!("▶ {}", cmd)))
+                    let label = Label::new(Some(&format!("▶ {}", cmd)));
+                    label.set_xalign(0.0);
+                    row_box.append(&label);
                 }
                 ResultItem::SearchQuery { engine, query } => {
-                    Label::new(Some(&format!("🌐 Search {}: {}", engine, query)))
+                    let label = Label::new(Some(&format!("🌐 Search {}: {}", engine, query)));
+                    label.set_xalign(0.0);
+                    row_box.append(&label);
                 }
-            };
+            }
 
-            label.set_xalign(0.0);
-            row_box.append(&label);
             row.set_child(Some(&row_box));
             list_box.append(&row);
         }

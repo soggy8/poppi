@@ -62,11 +62,11 @@ impl EmojiPicker {
 
     pub fn search(&self, query: &str) -> Vec<(&Emoji, i64)> {
         if query.is_empty() {
-            return self.emojis.iter().map(|e| (e, 0)).take(20).collect();
+            return self.emojis.iter().map(|e| (e, 0)).take(24).collect();
         }
 
         let query_lower = query.to_lowercase();
-        let mut results: Vec<(&Emoji, i64)> = Vec::with_capacity(20);
+        let mut results: Vec<(&Emoji, i64)> = Vec::with_capacity(24);
         
         for emoji in &self.emojis {
             // Match against name
@@ -86,7 +86,7 @@ impl EmojiPicker {
 
         // Use unstable sort for better performance
         results.sort_unstable_by(|a, b| b.1.cmp(&a.1));
-        results.truncate(20);
+        results.truncate(24);
         results
     }
 

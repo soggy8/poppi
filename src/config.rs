@@ -46,7 +46,7 @@ impl Default for Config {
                 background_color: "#0a0a0a".to_string(), // Almost black
                 text_color: "#e0e0e0".to_string(), // Slightly softer white
                 accent_color: "#4a9eff".to_string(), // Bright blue accent
-                border_radius: 0.5, // Completely boxy, no rounding
+                border_radius: 1.0, // Completely boxy, no rounding
                 font_size: 16,
                 width: 800,
                 height: 600,
