@@ -4,6 +4,7 @@ use crate::config::Config;
 use crate::emoji_picker::{Emoji, EmojiPicker};
 use crate::search::WebSearch;
 use crate::terminal::Terminal;
+use crate::window_switcher::{OpenWindow, WindowSwitcher};
 use gtk::prelude::*;
 use gtk::glib;
 use gtk::gdk;
@@ -15,6 +16,8 @@ use std::thread;
 pub struct LauncherState {
     pub app_launcher: AppLauncher,
     pub emoji_picker: EmojiPicker,
+    pub window_switcher: WindowSwitcher,
+    pub open_windows: Vec<OpenWindow>, // Cached list of open windows
     pub current_mode: Mode,
     pub results: Vec<ResultItem>,
     pub displayed_results: Vec<ResultItem>, // Results currently shown in UI
@@ -28,6 +31,7 @@ pub enum Mode {
     Emoji,
     Terminal,
     Search,
+    WindowSwitch,
 }
 
 #[derive(Clone, Debug)]
@@ -37,6 +41,7 @@ pub enum ResultItem {
     Emoji(Emoji),
     TerminalCommand(String),
     SearchQuery { engine: String, query: String },
+    OpenWindow(OpenWindow),
 }
 
 impl LauncherState {
@@ -44,6 +49,8 @@ impl LauncherState {
         Self {
             app_launcher: AppLauncher::empty(), // Start with empty launcher for lazy loading
             emoji_picker: EmojiPicker::new(),
+            window_switcher: WindowSwitcher::new(),
+            open_windows: Vec::new(),
             current_mode: Mode::Apps,
             results: Vec::new(),
             displayed_results: Vec::new(),
@@ -71,6 +78,63 @@ impl LauncherState {
                 .map(|(app, _)| ResultItem::App((*app).clone()))
                 .collect();
             return;
+        }
+
+        // Check for window switch mode
+        if query.starts_with("sw ") || query.starts_with("switch ") {
+            self.current_mode = Mode::WindowSwitch;
+            let window_query = query.strip_prefix("sw ").unwrap_or(query.strip_prefix("switch ").unwrap_or(query));
+            
+            // Only fetch windows if cache is empty (lazy loading)
+            // This prevents blocking the UI on every keystroke
+            if self.open_windows.is_empty() {
+                // Try to get windows, but don't block if it fails
+                if let Ok(windows) = self.window_switcher.get_open_windows() {
+                    if !windows.is_empty() {
+                        self.open_windows = windows;
+                    }
+                }
+            }
+            
+            // Search windows (even if empty, to show empty state)
+            let window_results = self.window_switcher.search(window_query, &self.open_windows);
+            self.results = window_results
+                .into_iter()
+                .map(|(window, _)| ResultItem::OpenWindow((*window).clone()))
+                .collect();
+            
+            // If no results and no windows, show a helpful message
+            if self.results.is_empty() && self.open_windows.is_empty() {
+                // Try to get windows one more time to see if there's an error
+                match self.window_switcher.get_open_windows() {
+                    Ok(windows) if !windows.is_empty() => {
+                        self.open_windows = windows;
+                        let window_results = self.window_switcher.search(window_query, &self.open_windows);
+                        self.results = window_results
+                            .into_iter()
+                            .map(|(window, _)| ResultItem::OpenWindow((*window).clone()))
+                            .collect();
+                    }
+                    Ok(_) => {
+                        self.results = vec![ResultItem::SearchQuery {
+                            engine: "info".to_string(),
+                            query: "No open windows found".to_string(),
+                        }];
+                    }
+                    Err(e) => {
+                        self.results = vec![ResultItem::SearchQuery {
+                            engine: "error".to_string(),
+                            query: format!("Error: {}. Try: wmctrl -l", e),
+                        }];
+                    }
+                }
+            }
+            return;
+        }
+        
+        // Clear window cache when leaving window switch mode
+        if !matches!(self.current_mode, Mode::WindowSwitch) {
+            self.open_windows.clear();
         }
 
         // Check for search prefixes
@@ -209,6 +273,9 @@ impl LauncherState {
                     "google" => WebSearch::search_google(query)?,
                     _ => {}
                 }
+            }
+            ResultItem::OpenWindow(window) => {
+                WindowSwitcher::switch_to_window(window)?;
             }
         }
 
@@ -905,6 +972,38 @@ fn update_results_list(list_box: &ListBox, emoji_grid: &Grid, results_container:
                     let label = Label::new(Some(&format!("🌐 Search {}: {}", engine, query)));
                     label.set_xalign(0.0);
                     row_box.append(&label);
+                }
+                ResultItem::OpenWindow(window) => {
+                    // Create icon (use a window icon or generic icon)
+                    let icon_widget = {
+                        let image = Image::from_icon_name("window");
+                        image.set_pixel_size(40);
+                        image.set_css_classes(&["app-icon"]);
+                        image
+                    };
+                    
+                    // Create vertical box for title and app name
+                    let text_box = GtkBox::builder()
+                        .orientation(gtk::Orientation::Vertical)
+                        .spacing(1)
+                        .valign(gtk::Align::Center)
+                        .build();
+                    
+                    // Window title
+                    let name_label = Label::new(Some(&window.title));
+                    name_label.set_xalign(0.0);
+                    name_label.add_css_class("app-name");
+                    
+                    // App name
+                    let desc_label = Label::new(Some(&window.app_name));
+                    desc_label.set_xalign(0.0);
+                    desc_label.add_css_class("app-description");
+                    
+                    text_box.append(&name_label);
+                    text_box.append(&desc_label);
+                    
+                    row_box.append(&icon_widget);
+                    row_box.append(&text_box);
                 }
             }
 

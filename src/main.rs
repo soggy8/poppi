@@ -6,6 +6,7 @@ mod search;
 mod terminal;
 mod ui;
 mod utils;
+mod window_switcher;
 
 use gtk::prelude::*;
 use gtk::{glib, gio, Application};
