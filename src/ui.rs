@@ -389,7 +389,7 @@ pub fn build_ui(app: &Application, config: Config) {
         }}
         
         window {{
-            background-color: transparent;
+            background-color: {};
             border: none;
         }}
         
@@ -516,15 +516,16 @@ pub fn build_ui(app: &Application, config: Config) {
             background-color: transparent;
         }}
         "#,
-        config.theme.background_color,
-        config.theme.font_size,
-        config_for_css.theme.text_color,
-        config_for_css.theme.accent_color,
-        config_for_css.theme.accent_color,
-        config_for_css.theme.text_color,
-        config_for_css.theme.font_size,
-        config_for_css.theme.text_color,
-        config_for_css.theme.font_size,
+        config_for_css.theme.background_color, // window background
+        config_for_css.theme.background_color, // launcher-box background
+        config_for_css.theme.font_size,         // entry font-size
+        config_for_css.theme.text_color,        // entry color
+        config_for_css.theme.accent_color,      // entry:focus border-color
+        config_for_css.theme.accent_color,      // entry:focus box-shadow
+        config_for_css.theme.text_color,        // label color
+        config_for_css.theme.font_size,         // label font-size
+        config_for_css.theme.text_color,        // app-name color
+        config_for_css.theme.font_size,         // app-name font-size
     );
 
     let provider = gtk::CssProvider::new();
