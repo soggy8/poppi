@@ -81,9 +81,13 @@ impl LauncherState {
         }
 
         // Check for window switch mode
-        if query.starts_with("sw ") || query.starts_with("switch ") {
+        if query == "sw" || query.starts_with("sw ") || query == "switch" || query.starts_with("switch ") {
             self.current_mode = Mode::WindowSwitch;
-            let window_query = query.strip_prefix("sw ").unwrap_or(query.strip_prefix("switch ").unwrap_or(query));
+            let window_query = if query == "sw" || query == "switch" {
+                ""
+            } else {
+                query.strip_prefix("sw ").unwrap_or(query.strip_prefix("switch ").unwrap_or(query))
+            };
             
             // Only fetch windows if cache is empty (lazy loading)
             // This prevents blocking the UI on every keystroke

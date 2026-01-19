@@ -20,6 +20,7 @@ Inspired by Albert launcher, built with Rust and GTK4 for optimal performance
 ## ✨ Features
 
 - **🎯 Application Search & Launch**: Fast fuzzy search through installed desktop applications
+- **🪟 Window Switcher**: Switch between open windows like GNOME's Super+Tab (prefix: `sw` or `switch`)
 - **🔢 Calculator**: Built-in calculator for quick computations (e.g., `2+2`, `10*5`)
 - **😀 Emoji Picker**: Search and insert emojis directly into the active text field (prefix: `emoji` or `:`)
 - **💻 Terminal Commands**: Execute terminal commands directly (opens terminal and runs command)
@@ -62,6 +63,22 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 ```
 
 #### Optional Dependencies
+
+For window switching:
+```bash
+# Fedora/RHEL
+sudo dnf install wmctrl
+
+# Ubuntu/Debian
+sudo apt install wmctrl
+
+# Arch Linux
+sudo pacman -S wmctrl
+```
+
+For native Wayland window support (recommended):
+- Install the [window-calls](https://github.com/ickyicky/window-calls) GNOME Shell extension
+- This enables switching to native Wayland applications (Kitty, Zen, etc.)
 
 For emoji insertion (X11):
 ```bash
@@ -135,16 +152,22 @@ poppi_launcher
 1. **Applications** (default): Just type the app name
    - Example: `firefox`, `code`, `terminal`
 
-2. **Calculator**: Type a mathematical expression
+2. **Window Switcher**: Prefix with `sw` or `switch`
+   - Example: `sw`, `switch`, `sw kit` (to filter for Kitty)
+   - Shows all open windows (XWayland and native Wayland if window-calls extension is installed)
+   - Filters out system windows, popups, and utility windows
+   - Works like GNOME's Super+Tab switcher
+
+3. **Calculator**: Type a mathematical expression
    - Example: `2+2`, `10*5-3`, `(5+3)*2`
 
-3. **Emoji**: Prefix with `emoji` or `:`
+4. **Emoji**: Prefix with `emoji` or `:`
    - Example: `emoji smile`, `:heart`, `emoji fire`
 
-4. **Terminal Commands**: Type a terminal command
+5. **Terminal Commands**: Type a terminal command
    - Example: `ls`, `git status`, `docker ps`
 
-5. **Web Search**: 
+6. **Web Search**: 
    - **YouTube**: `yt <query>` or `youtube <query>`
      - Example: `yt rust tutorial`
    - **ChatGPT**: `gpt <query>` or `chatgpt <query>`
