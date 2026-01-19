@@ -164,8 +164,10 @@ poppi_launcher
 4. **Emoji**: Prefix with `emoji` or `:`
    - Example: `emoji smile`, `:heart`, `emoji fire`
 
-5. **Terminal Commands**: Type a terminal command
-   - Example: `ls`, `git status`, `docker ps`
+5. **Terminal Commands**: Type any terminal command (automatically detected if command exists in PATH)
+   - Example: `ls`, `git status`, `docker ps`, `cargo build`, `npm install`
+   - Or use explicit prefixes: `> command`, `$ command`, `! command`, `term command`, `cmd command`
+   - Supports ALL commands in your PATH, not just hardcoded ones
 
 6. **Web Search**: 
    - **YouTube**: `yt <query>` or `youtube <query>`
