@@ -145,30 +145,50 @@ impl Terminal {
     }
 
     pub fn is_terminal_command(query: &str) -> bool {
-        // Simple heuristic: if it starts with common command patterns
         let trimmed = query.trim();
         
-        // Check for explicit terminal prefix
-        if trimmed.starts_with("> ") || trimmed.starts_with("$ ") {
+        if trimmed.is_empty() {
+            return false;
+        }
+        
+        // Check for explicit terminal prefixes
+        if trimmed.starts_with("> ") || 
+           trimmed.starts_with("$ ") || 
+           trimmed.starts_with("! ") ||
+           trimmed.starts_with("term ") ||
+           trimmed.starts_with("cmd ") {
             return true;
         }
         
-        // Common terminal commands
-        let terminal_commands = [
-            "ls", "cd", "pwd", "grep", "find", "cat", "less", "more",
-            "head", "tail", "mkdir", "rm", "cp", "mv", "chmod", "chown",
-            "sudo", "git", "npm", "cargo", "python", "python3", "node",
-            "yarn", "pnpm", "docker", "podman", "kubectl", "curl", "wget",
-            "ssh", "scp", "rsync", "htop", "top", "ps", "kill", "ping",
-            "traceroute", "ifconfig", "ip", "netstat", "df", "du", "free",
-            "uname", "whoami", "date", "cal", "man", "which", "whereis",
-            "echo", "printf", "touch", "nano", "vim", "vi", "nvim",
-            "apt", "dnf", "yum", "pacman", "flatpak", "snap",
-        ];
-
-        // Check if it starts with a known command
+        // Extract the first word (the command name)
         let first_word = trimmed.split_whitespace().next().unwrap_or("");
-        terminal_commands.iter().any(|&cmd| first_word == cmd)
+        
+        if first_word.is_empty() {
+            return false;
+        }
+        
+        // Check if it's a valid command in PATH
+        // This supports ALL terminal commands, not just hardcoded ones
+        Self::is_valid_command(first_word)
+    }
+    
+    fn is_valid_command(cmd: &str) -> bool {
+        // Check if command exists using 'command -v' (POSIX compliant, faster than 'which')
+        // This works for all commands in PATH, aliases, functions, and builtins
+        let output = Command::new("sh")
+            .arg("-c")
+            .arg(&format!("command -v {}", cmd))
+            .output();
+        
+        if let Ok(output) = output {
+            if output.status.success() {
+                let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                // Make sure it's not empty and is actually a command (not just whitespace)
+                return !path.is_empty() && !path.contains('\n');
+            }
+        }
+        
+        false
     }
 }
 
