@@ -389,7 +389,7 @@ pub fn build_ui(app: &Application, config: Config) {
         }}
         
         window {{
-            background-color: {};
+            background-color: transparent;
             border: none;
         }}
         
@@ -516,7 +516,6 @@ pub fn build_ui(app: &Application, config: Config) {
             background-color: transparent;
         }}
         "#,
-        config_for_css.theme.background_color, // window background
         config_for_css.theme.background_color, // launcher-box background
         config_for_css.theme.font_size,         // entry font-size
         config_for_css.theme.text_color,        // entry color

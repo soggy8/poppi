@@ -219,6 +219,17 @@ impl SettingsWindow {
         scrolled.set_child(Some(&main_box));
         scrolled.set_policy(gtk::PolicyType::Automatic, gtk::PolicyType::Automatic);
 
+        // Apply CSS to settings window to ensure it has a solid background
+        let provider = gtk::CssProvider::new();
+        provider.load_from_data(
+            "
+            window {
+                background-color: #2e2e2e;
+            }
+            "
+        );
+        window.style_context().add_provider(&provider, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
+
         window.set_child(Some(&scrolled));
         window.present();
     }
