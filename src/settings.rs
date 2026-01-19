@@ -172,6 +172,14 @@ impl SettingsWindow {
 
         let save_button = Button::with_label("Save");
         let cancel_button = Button::with_label("Cancel");
+        
+        // Add CSS classes to buttons for better styling
+        save_button.add_css_class("settings-button");
+        cancel_button.add_css_class("settings-button");
+        
+        // Remove default button styling that might interfere
+        save_button.remove_css_class("suggested-action");
+        cancel_button.remove_css_class("destructive-action");
 
         // Clone widgets for closure
         let bg_entry_clone = bg_entry.clone();
@@ -230,23 +238,42 @@ impl SettingsWindow {
             window {
                 background-color: #2e2e2e;
             }
-            button {
+            * {
+                color: #e0e0e0;
+            }
+            button,
+            button.settings-button {
+                background: #3e3e3e !important;
                 background-color: #3e3e3e !important;
+                background-image: none !important;
                 color: #e0e0e0 !important;
                 border: 1px solid #4a4a4a !important;
                 border-radius: 4px;
                 padding: 8px 16px;
                 font-size: 14px;
+                box-shadow: none !important;
             }
-            button:hover {
+            button:hover,
+            button.settings-button:hover {
+                background: #4a4a4a !important;
                 background-color: #4a4a4a !important;
+                background-image: none !important;
                 border-color: #5a5a5a !important;
             }
-            button:active {
+            button:active,
+            button.settings-button:active,
+            button:checked,
+            button.settings-button:checked {
+                background: #2a2a2a !important;
                 background-color: #2a2a2a !important;
+                background-image: none !important;
             }
-            button label {
+            button label,
+            button.settings-button label,
+            button > label,
+            button.settings-button > label {
                 color: #e0e0e0 !important;
+                background: transparent !important;
             }
             label {
                 color: #e0e0e0;
