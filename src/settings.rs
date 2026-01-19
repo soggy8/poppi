@@ -219,12 +219,49 @@ impl SettingsWindow {
         scrolled.set_child(Some(&main_box));
         scrolled.set_policy(gtk::PolicyType::Automatic, gtk::PolicyType::Automatic);
 
-        // Apply CSS to settings window to ensure it has a solid background
+        // Apply CSS to settings window to ensure it has a solid background and styled buttons
         let provider = gtk::CssProvider::new();
         provider.load_from_data(
             "
             window {
                 background-color: #2e2e2e;
+            }
+            button {
+                background-color: #3e3e3e;
+                color: #e0e0e0;
+                border: 1px solid #4a4a4a;
+                border-radius: 4px;
+                padding: 8px 16px;
+                font-size: 14px;
+            }
+            button:hover {
+                background-color: #4a4a4a;
+                border-color: #5a5a5a;
+            }
+            button:active {
+                background-color: #2a2a2a;
+            }
+            label {
+                color: #e0e0e0;
+            }
+            entry {
+                background-color: #1e1e1e;
+                color: #e0e0e0;
+                border: 1px solid #4a4a4a;
+                border-radius: 4px;
+                padding: 6px;
+            }
+            entry:focus {
+                border-color: #4a9eff;
+            }
+            spinbutton {
+                background-color: #1e1e1e;
+                color: #e0e0e0;
+                border: 1px solid #4a4a4a;
+                border-radius: 4px;
+            }
+            checkbutton {
+                color: #e0e0e0;
             }
             "
         );
