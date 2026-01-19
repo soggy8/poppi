@@ -3,6 +3,7 @@ mod calculator;
 mod config;
 mod emoji_picker;
 mod search;
+mod settings;
 mod terminal;
 mod ui;
 mod utils;

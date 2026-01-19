@@ -3,6 +3,7 @@ use crate::calculator::Calculator;
 use crate::config::Config;
 use crate::emoji_picker::{Emoji, EmojiPicker};
 use crate::search::WebSearch;
+use crate::settings::SettingsWindow;
 use crate::terminal::Terminal;
 use crate::window_switcher::{OpenWindow, WindowSwitcher};
 use gtk::prelude::*;
@@ -42,6 +43,7 @@ pub enum ResultItem {
     TerminalCommand(String),
     SearchQuery { engine: String, query: String },
     OpenWindow(OpenWindow),
+    Settings,
 }
 
 impl LauncherState {
@@ -77,6 +79,13 @@ impl LauncherState {
                 .into_iter()
                 .map(|(app, _)| ResultItem::App((*app).clone()))
                 .collect();
+            return;
+        }
+
+        // Check for settings
+        if query == "poppi settings" || query == "settings" || query.starts_with("poppi settings ") {
+            self.current_mode = Mode::Apps;
+            self.results = vec![ResultItem::Settings];
             return;
         }
 
@@ -281,6 +290,10 @@ impl LauncherState {
             ResultItem::OpenWindow(window) => {
                 WindowSwitcher::switch_to_window(window)?;
             }
+            ResultItem::Settings => {
+                // Settings will be handled in the UI callback with app and config
+                // This is a placeholder - actual opening happens in the UI
+            }
         }
 
         Ok(())
@@ -289,6 +302,9 @@ impl LauncherState {
 
 pub fn build_ui(app: &Application, config: Config) {
     let state = Arc::new(Mutex::new(LauncherState::new()));
+    let config_arc = Arc::new(Mutex::new(config.clone()));
+    let app_clone = app.clone();
+    let config_for_css = config.clone();
 
     // Fixed width, dynamic height based on results
     let window_width = 600;
@@ -502,13 +518,13 @@ pub fn build_ui(app: &Application, config: Config) {
         "#,
         config.theme.background_color,
         config.theme.font_size,
-        config.theme.text_color,
-        config.theme.accent_color,
-        config.theme.accent_color,
-        config.theme.text_color,
-        config.theme.font_size,
-        config.theme.text_color,
-        config.theme.font_size,
+        config_for_css.theme.text_color,
+        config_for_css.theme.accent_color,
+        config_for_css.theme.accent_color,
+        config_for_css.theme.text_color,
+        config_for_css.theme.font_size,
+        config_for_css.theme.text_color,
+        config_for_css.theme.font_size,
     );
 
     let provider = gtk::CssProvider::new();
@@ -583,6 +599,8 @@ pub fn build_ui(app: &Application, config: Config) {
     let list_box_clone = list_box.clone();
     let emoji_grid_clone = emoji_grid.clone();
     let results_container_clone = results_container.clone();
+    let config_clone = config_arc.clone();
+    let app_for_settings = app_clone.clone();
     entry.connect_activate(move |_entry| {
         let state = state_clone.lock().unwrap();
         if !state.displayed_results.is_empty() {
@@ -598,10 +616,16 @@ pub fn build_ui(app: &Application, config: Config) {
                     0
                 }
             };
-            if let Err(e) = state.execute_selected(selected_index) {
+            
+            // Check if settings
+            if let Some(ResultItem::Settings) = state.displayed_results.get(selected_index) {
+                SettingsWindow::open(&app_for_settings, config_clone.clone());
+                window_clone.close();
+            } else if let Err(e) = state.execute_selected(selected_index) {
                 eprintln!("Error executing: {}", e);
+            } else {
+                window_clone.close();
             }
-            window_clone.close();
         }
     });
 
@@ -1000,6 +1024,38 @@ fn update_results_list(list_box: &ListBox, emoji_grid: &Grid, results_container:
                     
                     // App name
                     let desc_label = Label::new(Some(&window.app_name));
+                    desc_label.set_xalign(0.0);
+                    desc_label.add_css_class("app-description");
+                    
+                    text_box.append(&name_label);
+                    text_box.append(&desc_label);
+                    
+                    row_box.append(&icon_widget);
+                    row_box.append(&text_box);
+                }
+                ResultItem::Settings => {
+                    // Create icon
+                    let icon_widget = {
+                        let image = Image::from_icon_name("preferences-system");
+                        image.set_pixel_size(40);
+                        image.set_css_classes(&["app-icon"]);
+                        image
+                    };
+                    
+                    // Create vertical box for title and description
+                    let text_box = GtkBox::builder()
+                        .orientation(gtk::Orientation::Vertical)
+                        .spacing(1)
+                        .valign(gtk::Align::Center)
+                        .build();
+                    
+                    // Settings title
+                    let name_label = Label::new(Some("Poppi Launcher Settings"));
+                    name_label.set_xalign(0.0);
+                    name_label.add_css_class("app-name");
+                    
+                    // Description
+                    let desc_label = Label::new(Some("Customize theme, search, and calculator options"));
                     desc_label.set_xalign(0.0);
                     desc_label.add_css_class("app-description");
                     
