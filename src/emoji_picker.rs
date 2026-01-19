@@ -1,5 +1,6 @@
 use fuzzy_matcher::FuzzyMatcher;
 use fuzzy_matcher::skim::SkimMatcherV2;
+use std::io::Write;
 
 #[derive(Debug, Clone)]
 pub struct Emoji {
@@ -92,16 +93,129 @@ impl EmojiPicker {
 
     pub fn insert_emoji(emoji: &str) -> Result<(), Box<dyn std::error::Error>> {
         use std::process::Command;
+        use std::io::Write;
         
-        // Use xdotool to type the emoji (X11)
-        // For Wayland, we'd need a different approach
-        Command::new("xdotool")
-            .arg("type")
-            .arg("--clearmodifiers")
-            .arg(emoji)
-            .output()?;
+        // Check if we're on Wayland or X11
+        let is_wayland = std::env::var("WAYLAND_DISPLAY").is_ok() || 
+                         std::env::var("XDG_SESSION_TYPE").map(|s| s == "wayland").unwrap_or(false);
+        
+        let mut insertion_successful = false;
+        
+        if is_wayland {
+            // Try wtype for Wayland (if available)
+            if Self::has_command("wtype") {
+                let output = Command::new("wtype")
+                    .arg(emoji)
+                    .output();
+                
+                if let Ok(output) = output {
+                    if output.status.success() {
+                        insertion_successful = true;
+                    }
+                }
+            }
+            
+            // Fallback: try ydotool for Wayland (if available)
+            if !insertion_successful && Self::has_command("ydotool") {
+                let mut child = Command::new("ydotool")
+                    .arg("type")
+                    .arg("--file")
+                    .arg("-")
+                    .stdin(std::process::Stdio::piped())
+                    .spawn();
+                
+                if let Ok(mut child) = child {
+                    if let Some(stdin) = child.stdin.as_mut() {
+                        if stdin.write_all(emoji.as_bytes()).is_ok() {
+                            if child.wait().map(|s| s.success()).unwrap_or(false) {
+                                insertion_successful = true;
+                            }
+                        }
+                    }
+                }
+            }
+        } else {
+            // Try xdotool for X11
+            if Self::has_command("xdotool") {
+                let output = Command::new("xdotool")
+                    .arg("type")
+                    .arg("--clearmodifiers")
+                    .arg(emoji)
+                    .output();
+                
+                if let Ok(output) = output {
+                    if output.status.success() {
+                        insertion_successful = true;
+                    }
+                }
+            }
+        }
+        
+        // If insertion failed or no tool available, copy to clipboard
+        if !insertion_successful {
+            Self::copy_to_clipboard(emoji)?;
+        }
         
         Ok(())
+    }
+    
+    fn copy_to_clipboard(text: &str) -> Result<(), Box<dyn std::error::Error>> {
+        use std::process::{Command, Stdio};
+        
+        // Try wl-copy for Wayland
+        if Self::has_command("wl-copy") {
+            let mut child = Command::new("wl-copy")
+                .stdin(Stdio::piped())
+                .spawn()?;
+            
+            if let Some(stdin) = child.stdin.as_mut() {
+                stdin.write_all(text.as_bytes())?;
+            }
+            child.wait()?;
+            return Ok(());
+        }
+        
+        // Try xclip for X11
+        if Self::has_command("xclip") {
+            let mut child = Command::new("xclip")
+                .arg("-selection")
+                .arg("clipboard")
+                .stdin(Stdio::piped())
+                .spawn()?;
+            
+            if let Some(stdin) = child.stdin.as_mut() {
+                stdin.write_all(text.as_bytes())?;
+            }
+            child.wait()?;
+            return Ok(());
+        }
+        
+        // Try xsel as fallback
+        if Self::has_command("xsel") {
+            let mut child = Command::new("xsel")
+                .arg("--clipboard")
+                .arg("--input")
+                .stdin(Stdio::piped())
+                .spawn()?;
+            
+            if let Some(stdin) = child.stdin.as_mut() {
+                stdin.write_all(text.as_bytes())?;
+            }
+            child.wait()?;
+            return Ok(());
+        }
+        
+        Err("No clipboard tool available (wl-copy, xclip, or xsel)".into())
+    }
+    
+    fn has_command(cmd: &str) -> bool {
+        use std::process::Command;
+        Command::new("sh")
+            .arg("-c")
+            .arg(&format!("command -v {}", cmd))
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
     }
 }
 
