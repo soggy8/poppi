@@ -21,7 +21,11 @@ impl SettingsWindow {
             .default_width(600)
             .default_height(700)
             .resizable(true)
+            .modal(true)
             .build();
+        
+        // Make sure window appears on top
+        window.present();
 
         let main_box = GtkBox::builder()
             .orientation(gtk::Orientation::Vertical)
@@ -227,19 +231,22 @@ impl SettingsWindow {
                 background-color: #2e2e2e;
             }
             button {
-                background-color: #3e3e3e;
-                color: #e0e0e0;
-                border: 1px solid #4a4a4a;
+                background-color: #3e3e3e !important;
+                color: #e0e0e0 !important;
+                border: 1px solid #4a4a4a !important;
                 border-radius: 4px;
                 padding: 8px 16px;
                 font-size: 14px;
             }
             button:hover {
-                background-color: #4a4a4a;
-                border-color: #5a5a5a;
+                background-color: #4a4a4a !important;
+                border-color: #5a5a5a !important;
             }
             button:active {
-                background-color: #2a2a2a;
+                background-color: #2a2a2a !important;
+            }
+            button label {
+                color: #e0e0e0 !important;
             }
             label {
                 color: #e0e0e0;
@@ -263,9 +270,16 @@ impl SettingsWindow {
             checkbutton {
                 color: #e0e0e0;
             }
+            checkbutton label {
+                color: #e0e0e0;
+            }
             "
         );
         window.style_context().add_provider(&provider, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
+        
+        // Also apply CSS directly to buttons to ensure styling works
+        save_button.style_context().add_provider(&provider, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
+        cancel_button.style_context().add_provider(&provider, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
 
         window.set_child(Some(&scrolled));
         window.present();
