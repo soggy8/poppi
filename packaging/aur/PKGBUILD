@@ -1,0 +1,50 @@
+# Maintainer: soggy8 <https://github.com/soggy8>
+#
+# Builds from the Git repository. Not yet published to the AUR and not
+# verified on Arch: build it with `makepkg -si` in this directory and
+# report what needs adjusting.
+pkgname=poppi-launcher-git
+pkgver=0.2.0
+pkgrel=1
+pkgdesc="Fast application launcher for GNOME: apps, files, windows, calculator, emoji, Claude"
+arch=('x86_64' 'aarch64')
+url="https://github.com/soggy8/poppi"
+license=('MIT')
+depends=('gtk4')
+makedepends=('cargo' 'git')
+optdepends=(
+    'wl-clipboard: copy results on Wayland'
+    'xclip: copy results on X11'
+    'xdotool: type emojis and list windows on X11'
+    'wmctrl: window switcher on X11'
+    'curl: currency conversion'
+    'claude-code: ask Claude'
+)
+provides=('poppi-launcher')
+conflicts=('poppi-launcher')
+source=("$pkgname::git+https://github.com/soggy8/poppi.git")
+sha256sums=('SKIP')
+
+pkgver() {
+    cd "$pkgname"
+    printf "%s.r%s.%s" "$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)" \
+        "$(git rev-list --count HEAD)" "$(git rev-parse --short HEAD)"
+}
+
+build() {
+    cd "$pkgname"
+    cargo build --release --locked
+}
+
+check() {
+    cd "$pkgname"
+    cargo test --release --locked
+}
+
+package() {
+    cd "$pkgname"
+    install -Dm755 target/release/poppi_launcher "$pkgdir/usr/bin/poppi_launcher"
+    install -Dm644 data/com.poppi.launcher.desktop "$pkgdir/usr/share/applications/com.poppi.launcher.desktop"
+    install -Dm644 data/com.poppi.launcher.svg "$pkgdir/usr/share/icons/hicolor/scalable/apps/com.poppi.launcher.svg"
+    install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}

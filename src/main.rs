@@ -2,10 +2,12 @@ mod alias;
 mod app_launcher;
 mod calculator;
 mod claude;
+mod clipboard;
 mod config;
 mod emoji_picker;
 mod files;
 mod history;
+mod markdown;
 mod matching;
 mod query;
 mod rows;
@@ -13,21 +15,98 @@ mod search;
 mod settings;
 mod state;
 mod style;
+mod system;
 mod terminal;
 mod ui;
+mod units;
 mod usage;
 mod utils;
 mod window_switcher;
 
+use config::Config;
 use gtk::prelude::*;
-use gtk::{glib, Application};
+use gtk::{gio, glib, Application};
 use std::cell::RefCell;
 use std::rc::Rc;
 
 const APP_ID: &str = "com.poppi.launcher";
 
+const HELP: &str = "\
+Poppi Launcher
+
+Usage: poppi_launcher [OPTION]
+
+With no option, shows the launcher, or toggles it if it is already running.
+
+Options:
+  --quit         Stop the instance running in the background
+  -V, --version  Print the version
+  -h, --help     Print this help";
+
+/// Ask a running instance to exit. Works from a second process because
+/// GApplication exports the primary instance's actions over D-Bus.
+fn quit_running_instance() -> glib::ExitCode {
+    let app = Application::builder().application_id(APP_ID).build();
+    if let Err(e) = app.register(gio::Cancellable::NONE) {
+        eprintln!("Could not reach the session bus: {}", e);
+        return glib::ExitCode::FAILURE;
+    }
+    if app.is_remote() {
+        app.activate_action("quit", None);
+        println!("Poppi Launcher stopped.");
+    } else {
+        println!("Poppi Launcher is not running.");
+    }
+    glib::ExitCode::SUCCESS
+}
+
+/// Reload the config whenever its file changes on disk, so hand edits apply
+/// without a restart. A file that does not parse is ignored (and reported).
+fn watch_config(config: &Rc<RefCell<Config>>) -> Option<gio::FileMonitor> {
+    let file = gio::File::for_path(Config::config_path());
+    let monitor = file
+        .monitor_file(gio::FileMonitorFlags::WATCH_MOVES, gio::Cancellable::NONE)
+        .ok()?;
+    let config = config.clone();
+    monitor.connect_changed(move |_, _, _, event| {
+        use gio::FileMonitorEvent::{ChangesDoneHint, Created, Renamed};
+        if !matches!(event, ChangesDoneHint | Created | Renamed) {
+            return;
+        }
+        match Config::load_existing() {
+            Ok(loaded) => {
+                // Our own saves arrive here too; they change nothing.
+                if *config.borrow() != loaded {
+                    *config.borrow_mut() = loaded;
+                    style::apply(&config.borrow());
+                    ui::config_changed();
+                }
+            }
+            Err(error) => eprintln!("{}", error),
+        }
+    });
+    Some(monitor)
+}
+
 fn main() -> glib::ExitCode {
-    let (config, config_error) = config::Config::load();
+    match std::env::args().nth(1).as_deref() {
+        Some("--version" | "-V") => {
+            println!("poppi_launcher {}", env!("CARGO_PKG_VERSION"));
+            return glib::ExitCode::SUCCESS;
+        }
+        Some("--help" | "-h") => {
+            println!("{}", HELP);
+            return glib::ExitCode::SUCCESS;
+        }
+        Some("--quit") => return quit_running_instance(),
+        Some(other) => {
+            eprintln!("Unknown option: {}\n\n{}", other, HELP);
+            return glib::ExitCode::FAILURE;
+        }
+        None => {}
+    }
+
+    let (config, config_error) = Config::load();
     if let Some(error) = &config_error {
         eprintln!("{}", error);
     }
@@ -38,16 +117,29 @@ fn main() -> glib::ExitCode {
     let app = Application::builder().application_id(APP_ID).build();
 
     let startup_config = config.clone();
-    app.connect_startup(move |_| {
-        // Both windows are dark; ask the theme for dark widgets too, so parts
-        // we do not restyle (title bar, popovers, selections) match.
-        if let Some(settings) = gtk::Settings::default() {
-            settings.set_gtk_application_prefer_dark_theme(true);
-        }
+    app.connect_startup(move |app| {
         style::apply(&startup_config.borrow());
+
+        let quit = gio::SimpleAction::new("quit", None);
+        let app_for_quit = app.clone();
+        quit.connect_activate(move |_, _| app_for_quit.quit());
+        app.add_action(&quit);
+
+        // Follow the desktop when it switches between light and dark.
+        let config_for_scheme = startup_config.clone();
+        style::watch_system_scheme(move || {
+            style::apply(&config_for_scheme.borrow());
+            ui::config_changed();
+        });
+
+        // The monitor has to stay alive for as long as the application.
+        if let Some(monitor) = watch_config(&startup_config) {
+            std::mem::forget(monitor);
+        }
     });
 
     app.connect_activate(move |app| ui::activate(app, &config, config_error.as_deref()));
 
-    app.run()
+    // Arguments were handled above; GApplication gets none.
+    app.run_with_args::<&str>(&[])
 }

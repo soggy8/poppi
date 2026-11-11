@@ -107,6 +107,76 @@ impl Matcher {
     }
 }
 
+/// Character positions in `text` that a query matched, for emphasis in the
+/// UI. Follows the same order of preference as scoring. Empty when the
+/// match came from somewhere else (a keyword, say) or cannot be mapped.
+pub fn highlight(matcher: &Matcher, query: &str, text: &str) -> Vec<usize> {
+    let query: Vec<char> = query.trim().to_lowercase().chars().collect();
+    // One lowercase char per original char keeps positions aligned.
+    let lower: Vec<char> = text
+        .chars()
+        .map(|c| c.to_lowercase().next().unwrap_or(c))
+        .collect();
+    if query.is_empty() || lower.is_empty() {
+        return Vec::new();
+    }
+
+    let starts_word = |i: usize| i == 0 || !lower[i - 1].is_alphanumeric();
+    // Where `needle` occurs, preferring an occurrence at the start of a word.
+    let locate = |needle: &[char]| -> Option<usize> {
+        if needle.is_empty() || needle.len() > lower.len() {
+            return None;
+        }
+        let mut first = None;
+        for i in 0..=lower.len() - needle.len() {
+            if lower[i..i + needle.len()] == *needle {
+                if starts_word(i) {
+                    return Some(i);
+                }
+                first.get_or_insert(i);
+            }
+        }
+        first
+    };
+
+    if let Some(start) = locate(&query) {
+        return (start..start + query.len()).collect();
+    }
+
+    let tokens: Vec<&[char]> = query.split(|c| c.is_whitespace()).filter(|t| !t.is_empty()).collect();
+    if tokens.len() > 1 {
+        let mut positions = Vec::new();
+        for token in &tokens {
+            match locate(token) {
+                Some(start) => positions.extend(start..start + token.len()),
+                None => return Vec::new(),
+            }
+        }
+        positions.sort_unstable();
+        positions.dedup();
+        return positions;
+    }
+
+    let word_starts: Vec<usize> = (0..lower.len())
+        .filter(|&i| lower[i].is_alphanumeric() && starts_word(i))
+        .collect();
+    if query.len() >= 2
+        && word_starts.len() >= query.len()
+        && query.iter().zip(&word_starts).all(|(q, &i)| lower[i] == *q)
+    {
+        return word_starts[..query.len()].to_vec();
+    }
+
+    let lower_text: String = lower.iter().collect();
+    let query_text: String = query.iter().collect();
+    if matcher.score(&query_text, &lower_text).is_some() {
+        if let Some((_, indices)) = matcher.skim.fuzzy_indices(&lower_text, &query_text) {
+            return indices;
+        }
+    }
+    Vec::new()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -156,6 +226,21 @@ mod tests {
     #[test]
     fn shorter_text_wins_within_a_tier() {
         assert!(score("fire", "firefox").unwrap() > score("fire", "firewall configuration").unwrap());
+    }
+
+    #[test]
+    fn highlight_positions() {
+        let m = Matcher::new();
+        assert_eq!(highlight(&m, "fire", "Firefox"), vec![0, 1, 2, 3]);
+        // Prefers the word start over an earlier mid-word occurrence.
+        assert_eq!(highlight(&m, "co", "Disco Code"), vec![6, 7]);
+        assert_eq!(highlight(&m, "office", "LibreOffice"), vec![5, 6, 7, 8, 9, 10]);
+        assert_eq!(highlight(&m, "vsc", "Visual Studio Code"), vec![0, 7, 14]);
+        assert_eq!(highlight(&m, "stu vis", "Visual Studio Code"), vec![0, 1, 2, 7, 8, 9]);
+        assert_eq!(highlight(&m, "frfx", "Firefox"), vec![0, 2, 4, 6]);
+        assert!(highlight(&m, "browser", "Firefox").is_empty());
+        assert!(highlight(&m, "", "Firefox").is_empty());
+        assert_eq!(highlight(&m, "über", "Über App"), vec![0, 1, 2, 3]);
     }
 
     #[test]

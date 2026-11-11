@@ -10,6 +10,9 @@ pub struct App {
     pub name: String,
     pub description: Option<String>,
     pub icon: Option<gio::Icon>,
+    /// Set for an extra action of an app ("New Private Window"); the name
+    /// is then the action's and the description names the app.
+    action: Option<String>,
     info: gio::AppInfo,
     name_lower: String,
     description_lower: Option<String>,
@@ -79,6 +82,7 @@ impl AppLauncher {
     /// localizes names and honours NoDisplay/Hidden/OnlyShowIn.
     /// Must run on the main thread: `gio::AppInfo` is not `Send`.
     pub fn load() -> Self {
+        let mut actions: Vec<App> = Vec::new();
         let mut apps: Vec<App> = gio::AppInfo::all()
             .into_iter()
             .filter(|info| info.should_show())
@@ -103,6 +107,26 @@ impl AppLauncher {
                     if let Some(class) = desktop.startup_wm_class() {
                         window_classes.push(class.to_lowercase());
                     }
+                    // Desktop actions become their own, lower-ranked entries.
+                    for action in desktop.list_actions() {
+                        let label = desktop.action_name(&action).to_string();
+                        if label.is_empty() {
+                            continue;
+                        }
+                        actions.push(App {
+                            id: format!("{}::{}", id, action),
+                            name_lower: label.to_lowercase(),
+                            description_lower: None,
+                            // Also found as "firefox private".
+                            keywords_lower: vec![format!("{} {}", name, label).to_lowercase()],
+                            window_classes: Vec::new(),
+                            icon: info.icon(),
+                            action: Some(action.to_string()),
+                            description: Some(name.clone()),
+                            name: label,
+                            info: info.clone(),
+                        });
+                    }
                 }
 
                 App {
@@ -111,6 +135,7 @@ impl AppLauncher {
                     keywords_lower,
                     window_classes,
                     icon: info.icon(),
+                    action: None,
                     id,
                     name,
                     description,
@@ -119,6 +144,7 @@ impl AppLauncher {
             })
             .collect();
 
+        apps.append(&mut actions);
         apps.sort_by(|a, b| a.name_lower.cmp(&b.name_lower));
         Self {
             apps,
@@ -143,6 +169,9 @@ impl AppLauncher {
                     app.description_lower.as_deref(),
                     &app.keywords_lower,
                 )
+                // An action never outranks a comparable match on an app.
+                .map(|score| score - if app.action.is_some() { 120 } else { 0 })
+                .filter(|score| *score > 0)
                 .map(|score| (app, score + usage.boost(&app.id)))
             })
             .collect();
@@ -152,15 +181,15 @@ impl AppLauncher {
         results.into_iter().take(limit).map(|(app, _)| app).collect()
     }
 
-    /// Apps that have been launched from here, most launched first.
+    /// Apps launched from here, ranked by how often and how recently.
     pub fn most_used(&self, usage: &Usage, limit: usize) -> Vec<&App> {
-        let mut used: Vec<(&App, u32)> = self
+        let mut used: Vec<(&App, f64)> = self
             .apps
             .iter()
-            .map(|app| (app, usage.count(&app.id)))
-            .filter(|(_, count)| *count > 0)
+            .map(|app| (app, usage.frecency(&app.id)))
+            .filter(|(_, frecency)| *frecency > 0.0)
             .collect();
-        used.sort_by(|a, b| b.1.cmp(&a.1));
+        used.sort_by(|a, b| b.1.total_cmp(&a.1));
         used.into_iter().take(limit).map(|(app, _)| app).collect()
     }
 
@@ -186,6 +215,14 @@ impl AppLauncher {
     }
 
     pub fn launch(app: &App, context: Option<&gio::AppLaunchContext>) -> Result<(), String> {
+        if let Some(action) = &app.action {
+            let desktop = app
+                .info
+                .downcast_ref::<gio::DesktopAppInfo>()
+                .ok_or("Not a desktop application")?;
+            desktop.launch_action(action, context);
+            return Ok(());
+        }
         app.info
             .launch(&[], context)
             .map_err(|e| format!("Could not launch {}: {}", app.name, e))

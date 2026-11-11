@@ -17,6 +17,10 @@ toml = "0.8"
 dirs = "5.0"
 urlencoding = "2.1"
 
+[features]
+# Scripted UI driver used by scripts/ui-smoke.sh; never enabled in releases.
+ui-test = []
+
 [profile.release]
 opt-level = 3
 lto = "fat"

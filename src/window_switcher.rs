@@ -128,7 +128,15 @@ fn list_shell_windows() -> Result<Vec<OpenWindow>, String> {
         .try_child_value(0)
         .and_then(|v| v.str().map(str::to_string))
         .ok_or_else(|| "Unexpected reply from window-calls".to_string())?;
-    parse_shell_windows(&json, std::process::id())
+    let mut windows = parse_shell_windows(&json, std::process::id())?;
+    // The extension lists windows in stacking order, bottom first. Reversed,
+    // that is most recently used first; the top one is where the user just
+    // was, so it goes last, like Alt+Tab.
+    windows.reverse();
+    if windows.len() > 1 {
+        windows.rotate_left(1);
+    }
+    Ok(windows)
 }
 
 /// DOCK, DESKTOP, SPLASH and friends are not windows a user switches to.
@@ -253,9 +261,8 @@ pub fn list_windows() -> Result<Vec<OpenWindow>, String> {
 pub fn search<'a>(matcher: &Matcher, query: &str, windows: &'a [OpenWindow]) -> Vec<&'a OpenWindow> {
     let query = query.trim().to_lowercase();
     if query.is_empty() {
-        let mut all: Vec<&OpenWindow> = windows.iter().collect();
-        all.sort_by_key(|w| w.title.to_lowercase());
-        return all;
+        // Keep the order from `list_windows` (most recently used first).
+        return windows.iter().collect();
     }
 
     let mut results: Vec<(&OpenWindow, i64)> = windows
@@ -375,7 +382,7 @@ mod tests {
     }
 
     #[test]
-    fn search_ranks_title_over_app_and_sorts_empty_query() {
+    fn search_ranks_title_over_app_and_keeps_order_for_empty_query() {
         let matcher = Matcher::new();
         let windows = vec![
             window("zsh", "Kitty"),
@@ -384,7 +391,7 @@ mod tests {
         ];
 
         let all = search(&matcher, "", &windows);
-        assert_eq!(all[0].title, "Alpha");
+        assert_eq!(all[0].title, "zsh");
         assert_eq!(all.len(), 3);
 
         // Equally good matches: the title wins over the app name.

@@ -27,8 +27,23 @@ pub enum Inserted {
     CopiedToClipboard,
 }
 
+/// Config value to skin tone; anything unknown means no modifier.
+pub fn skin_tone(name: &str) -> emojis::SkinTone {
+    match name.trim().to_lowercase().as_str() {
+        "light" => emojis::SkinTone::Light,
+        "medium-light" => emojis::SkinTone::MediumLight,
+        "medium" => emojis::SkinTone::Medium,
+        "medium-dark" => emojis::SkinTone::MediumDark,
+        "dark" => emojis::SkinTone::Dark,
+        _ => emojis::SkinTone::Default,
+    }
+}
+
+pub const SKIN_TONES: [&str; 6] = ["default", "light", "medium-light", "medium", "medium-dark", "dark"];
+
 impl EmojiPicker {
-    pub fn new() -> Self {
+    /// `tone` is applied to every emoji that supports a skin tone.
+    pub fn new(tone: emojis::SkinTone) -> Self {
         let entries = emojis::iter()
             .map(|data| {
                 let name = data.name();
@@ -41,9 +56,10 @@ impl EmojiPicker {
                 for shortcode in data.shortcodes() {
                     keywords.push(shortcode.to_lowercase());
                 }
+                let shown = data.with_skin_tone(tone).unwrap_or(data);
                 Entry {
                     emoji: Emoji {
-                        emoji: data.as_str(),
+                        emoji: shown.as_str(),
                         name,
                     },
                     keywords,
@@ -56,14 +72,30 @@ impl EmojiPicker {
         }
     }
 
-    pub fn search(&self, query: &str, limit: usize) -> Vec<Emoji> {
+    /// With an empty query: recently picked emojis first, then the standard
+    /// order. `recent` holds glyphs, most recent first.
+    pub fn search(&self, query: &str, recent: &[String], limit: usize) -> Vec<Emoji> {
         if query.is_empty() {
-            return self
-                .entries
+            let mut results: Vec<Emoji> = recent
                 .iter()
-                .take(limit)
-                .map(|e| e.emoji.clone())
+                .filter_map(|glyph| {
+                    let data = emojis::get(glyph)?;
+                    Some(Emoji {
+                        emoji: data.as_str(),
+                        name: data.name(),
+                    })
+                })
                 .collect();
+            for entry in &self.entries {
+                if results.len() >= limit {
+                    break;
+                }
+                if !results.iter().any(|e| e.emoji == entry.emoji.emoji) {
+                    results.push(entry.emoji.clone());
+                }
+            }
+            results.truncate(limit);
+            return results;
         }
 
         let query = query.to_lowercase();
@@ -145,25 +177,40 @@ impl EmojiPicker {
 mod tests {
     use super::*;
 
+    fn picker() -> EmojiPicker {
+        EmojiPicker::new(emojis::SkinTone::Default)
+    }
+
     #[test]
-    fn empty_query_returns_the_first_emojis() {
-        let picker = EmojiPicker::new();
-        assert_eq!(picker.search("", 24).len(), 24);
+    fn empty_query_returns_recents_then_the_first_emojis() {
+        let picker = picker();
+        assert_eq!(picker.search("", &[], 24).len(), 24);
+
+        let recent = vec!["🔥".to_string(), "not an emoji".to_string(), "👍".to_string()];
+        let results = picker.search("", &recent, 24);
+        assert_eq!(results.len(), 24);
+        assert_eq!(results[0].emoji, "🔥");
+        assert_eq!(results[1].emoji, "👍");
+        assert_eq!(results.iter().filter(|e| e.emoji == "🔥").count(), 1);
     }
 
     #[test]
     fn search_finds_by_name_and_shortcode() {
-        let picker = EmojiPicker::new();
-        let fire = picker.search("fire", 24);
-        assert!(fire.iter().any(|e| e.emoji == "🔥"));
-        let thumbs = picker.search("+1", 24);
-        assert!(thumbs.iter().any(|e| e.emoji == "👍"));
-        assert!(picker.search("zzzzqqqqxxxx", 24).is_empty());
+        let picker = picker();
+        assert!(picker.search("fire", &[], 24).iter().any(|e| e.emoji == "🔥"));
+        assert!(picker.search("+1", &[], 24).iter().any(|e| e.emoji == "👍"));
+        assert!(picker.search("zzzzqqqqxxxx", &[], 24).is_empty());
+        assert_eq!(picker.search("FIRE", &[], 5), picker.search("fire", &[], 5));
     }
 
     #[test]
-    fn search_is_case_insensitive() {
-        let picker = EmojiPicker::new();
-        assert_eq!(picker.search("FIRE", 5), picker.search("fire", 5));
+    fn skin_tone_is_applied_where_supported() {
+        let toned = EmojiPicker::new(skin_tone("medium"));
+        let thumbs = toned.search("thumbs up", &[], 5);
+        assert_eq!(thumbs[0].emoji, "👍🏽");
+        // Emojis without skin tones are unchanged.
+        assert!(toned.search("fire", &[], 24).iter().any(|e| e.emoji == "🔥"));
+        assert_eq!(skin_tone("nonsense"), emojis::SkinTone::Default);
+        assert_eq!(skin_tone(SKIN_TONES[5]), emojis::SkinTone::Dark);
     }
 }

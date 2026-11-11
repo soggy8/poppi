@@ -3,6 +3,7 @@
 
 use crate::config::FilesConfig;
 use crate::matching::Matcher;
+use crate::usage::Usage;
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 
@@ -15,19 +16,33 @@ pub struct FileEntry {
     pub path: PathBuf,
     pub name: String,
     pub is_dir: bool,
+    /// Unix time of the last modification; 0 when unknown.
+    pub modified: u64,
     name_lower: String,
     depth: usize,
 }
 
 impl FileEntry {
     fn new(path: PathBuf, name: String, is_dir: bool, depth: usize) -> Self {
+        let modified = std::fs::symlink_metadata(&path)
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
         Self {
+            modified,
             name_lower: name.to_lowercase(),
             path,
             name,
             is_dir,
             depth,
         }
+    }
+
+    /// Key under which opening this file is counted.
+    pub fn usage_id(&self) -> String {
+        format!("file:{}", self.path.display())
     }
 
     /// The containing directory, with the home directory shortened to `~`.
@@ -105,9 +120,31 @@ pub fn build_index(config: &FilesConfig) -> Vec<FileEntry> {
     entries
 }
 
-/// Rank indexed files by name. Uses the strict tiers only (no fuzzy), which
-/// keeps a keystroke over a few hundred thousand names in the millisecond range.
-pub fn search<'a>(query: &str, entries: &'a [FileEntry], limit: usize) -> Vec<&'a FileEntry> {
+/// Bonus for files touched lately: what you are looking for is usually
+/// something you worked on recently.
+fn recency_bonus(modified: u64, now: u64) -> i64 {
+    const DAY: u64 = 86_400;
+    if modified == 0 {
+        return 0;
+    }
+    match now.saturating_sub(modified) / DAY {
+        0 => 40,
+        1..=6 => 25,
+        7..=29 => 10,
+        _ => 0,
+    }
+}
+
+/// Rank indexed files by name, then by how recently they changed and how
+/// often they were opened from here. Uses the strict tiers only (no fuzzy),
+/// which keeps a keystroke over a few hundred thousand names fast.
+pub fn search<'a>(
+    query: &str,
+    entries: &'a [FileEntry],
+    usage: &Usage,
+    now: u64,
+    limit: usize,
+) -> Vec<&'a FileEntry> {
     let query = query.trim().to_lowercase();
     if query.is_empty() {
         return Vec::new();
@@ -117,7 +154,11 @@ pub fn search<'a>(query: &str, entries: &'a [FileEntry], limit: usize) -> Vec<&'
         .filter_map(|entry| {
             Matcher::strict(&query, &entry.name_lower)
                 // Prefer files closer to the root among similar matches.
-                .map(|score| (entry, score - entry.depth as i64 * 3))
+                .map(|score| score - entry.depth as i64 * 3 + recency_bonus(entry.modified, now))
+                .map(|score| {
+                    // Only look up usage for actual matches.
+                    (entry, score + usage.boost(&entry.usage_id()))
+                })
         })
         .collect();
     results.sort_by(|a, b| b.1.cmp(&a.1));
@@ -258,15 +299,44 @@ mod tests {
         let tree = TempTree::new("search");
         let index = build_index(&tree.config());
 
-        let reports = names(&search("report", &index, 10));
+        let reports = names(&search("report", &index, &Usage::load_from(None), 0, 10));
         assert_eq!(reports[0], "reports");
         assert!(reports.contains(&"report-2026.pdf".to_string()));
         assert!(reports.contains(&"annual report.txt".to_string()));
 
-        assert_eq!(names(&search("ann rep", &index, 10)), vec!["annual report.txt"]);
-        assert_eq!(names(&search("NOTES", &index, 10)), vec!["notes.md"]);
-        assert!(search("zzzz", &index, 10).is_empty());
-        assert_eq!(search("report", &index, 1).len(), 1);
+        assert_eq!(names(&search("ann rep", &index, &Usage::load_from(None), 0, 10)), vec!["annual report.txt"]);
+        assert_eq!(names(&search("NOTES", &index, &Usage::load_from(None), 0, 10)), vec!["notes.md"]);
+        assert!(search("zzzz", &index, &Usage::load_from(None), 0, 10).is_empty());
+        assert_eq!(search("report", &index, &Usage::load_from(None), 0, 1).len(), 1);
+    }
+
+    #[test]
+    fn recent_and_often_opened_files_rank_higher() {
+        const DAY: u64 = 86_400;
+        let now = 1_000 * DAY;
+        let entry = |name: &str, modified: u64| FileEntry {
+            path: PathBuf::from(format!("/x/{}", name)),
+            name: name.to_string(),
+            is_dir: false,
+            modified,
+            name_lower: name.to_lowercase(),
+            depth: 1,
+        };
+        let index = vec![
+            entry("report-old.txt", now - 400 * DAY),
+            entry("report-new.txt", now - 2 * DAY),
+        ];
+        let mut usage = Usage::load_from(None);
+        assert_eq!(names(&search("report", &index, &usage, now, 10))[0], "report-new.txt");
+
+        // Opening the old one repeatedly outweighs the newer file's recency.
+        for _ in 0..20 {
+            usage.record(&index[0].usage_id());
+        }
+        assert_eq!(names(&search("report", &index, &usage, now, 10))[0], "report-old.txt");
+
+        assert_eq!(recency_bonus(0, now), 0);
+        assert!(recency_bonus(now, now) > recency_bonus(now - 3 * DAY, now));
     }
 
     #[test]

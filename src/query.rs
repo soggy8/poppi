@@ -3,6 +3,7 @@
 
 use crate::calculator::Calculator;
 use crate::search::Engine;
+use crate::units;
 use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -15,6 +16,10 @@ pub enum Intent {
     Windows(String),
     Search { engine: Engine, query: String },
     Emoji(String),
+    /// `5 km in miles`, `20 usd to eur`: resolved against units or rates.
+    Convert(units::Request),
+    /// Clipboard history, optionally filtered.
+    Clipboard(String),
     /// A calculation and its formatted result.
     Calc { expression: String, result: String },
     /// File search by name.
@@ -41,6 +46,7 @@ pub struct ParseOptions {
     pub calculator: bool,
     pub files: bool,
     pub claude: bool,
+    pub clipboard: bool,
     pub aliases: BTreeMap<String, String>,
 }
 
@@ -52,6 +58,7 @@ impl Default for ParseOptions {
             calculator: true,
             files: true,
             claude: true,
+            clipboard: true,
             aliases: BTreeMap::new(),
         }
     }
@@ -111,6 +118,19 @@ pub fn parse(query: &str, options: &ParseOptions) -> Intent {
         };
     }
 
+    // Explicit ways to reach Claude without a question mark.
+    if options.claude {
+        if let Some(rest) = strip_any(query, &["ask", "ai"]).filter(|r| r.chars().count() >= 2) {
+            return Intent::Ask(rest.to_string());
+        }
+    }
+
+    if options.clipboard {
+        if let Some(filter) = strip_any(query, &["clip", "cb", "clipboard"]) {
+            return Intent::Clipboard(filter.to_string());
+        }
+    }
+
     if let Some(filter) = strip_keyword(query, "history") {
         return Intent::History(filter.to_string());
     }
@@ -156,6 +176,12 @@ pub fn parse(query: &str, options: &ParseOptions) -> Intent {
 
     if let Some(command) = terminal_command(query) {
         return Intent::Terminal(command.to_string());
+    }
+
+    if options.calculator {
+        if let Some(request) = units::parse(query) {
+            return Intent::Convert(request);
+        }
     }
 
     if options.calculator && Calculator::is_calculation(query) {
@@ -321,6 +347,34 @@ mod tests {
             ..ParseOptions::default()
         };
         assert_eq!(parse("what is rust?", &options), Intent::Apps("what is rust?".into()));
+    }
+
+    #[test]
+    fn ask_prefixes_and_clipboard() {
+        assert_eq!(p("ask tell me a joke"), Intent::Ask("tell me a joke".into()));
+        assert_eq!(p("ai rust vs go"), Intent::Ask("rust vs go".into()));
+        assert_eq!(p("ask"), Intent::Apps("ask".into()));
+        assert_eq!(p("airplane"), Intent::Apps("airplane".into()));
+        assert_eq!(p("clip"), Intent::Clipboard("".into()));
+        assert_eq!(p("cb http"), Intent::Clipboard("http".into()));
+        assert_eq!(p("clipboard"), Intent::Clipboard("".into()));
+
+        let options = ParseOptions {
+            claude: false,
+            clipboard: false,
+            ..ParseOptions::default()
+        };
+        assert_eq!(parse("ask why", &options), Intent::Apps("ask why".into()));
+        assert_eq!(parse("clip", &options), Intent::Apps("clip".into()));
+    }
+
+    #[test]
+    fn conversions() {
+        assert!(matches!(p("5 km in miles"), Intent::Convert(r) if r.from == "km" && r.to == "miles"));
+        assert!(matches!(p("100 usd to eur"), Intent::Convert(r) if r.amount == 100.0));
+        // No separator, no conversion: still arithmetic or an app search.
+        assert!(matches!(p("5 * 3"), Intent::Calc { .. }));
+        assert_eq!(p("5 km"), Intent::Apps("5 km".into()));
     }
 
     #[test]

@@ -14,6 +14,8 @@ pub struct Config {
     pub calculator: CalculatorConfig,
     pub files: FilesConfig,
     pub claude: ClaudeConfig,
+    pub clipboard: ClipboardConfig,
+    pub emoji: EmojiConfig,
     /// Keyword -> URL or command. `{}` is replaced by the typed arguments.
     pub aliases: BTreeMap<String, String>,
 }
@@ -21,8 +23,14 @@ pub struct Config {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ThemeConfig {
+    /// "dark", "light" or "system" (follow the desktop's colour scheme).
+    pub mode: String,
+    /// Colours for dark mode.
     pub background_color: String,
     pub text_color: String,
+    /// Colours for light mode.
+    pub light_background_color: String,
+    pub light_text_color: String,
     pub accent_color: String,
     /// Corner radius of the launcher, in pixels.
     pub border_radius: f64,
@@ -60,6 +68,41 @@ pub struct SearchConfig {
 #[serde(default)]
 pub struct CalculatorConfig {
     pub enabled: bool,
+    /// Currency conversion downloads exchange rates (ECB, via
+    /// frankfurter.dev) at most twice a day.
+    pub currency: bool,
+}
+
+/// Clipboard history is kept in memory only.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ClipboardConfig {
+    pub enabled: bool,
+    pub size: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct EmojiConfig {
+    /// "default", "light", "medium-light", "medium", "medium-dark" or "dark".
+    pub skin_tone: String,
+}
+
+impl Default for ClipboardConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            size: 30,
+        }
+    }
+}
+
+impl Default for EmojiConfig {
+    fn default() -> Self {
+        Self {
+            skin_tone: "default".to_string(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -79,12 +122,15 @@ pub struct FilesConfig {
 impl Default for ThemeConfig {
     fn default() -> Self {
         Self {
-            background_color: "#0a0a0a".to_string(),
-            text_color: "#e0e0e0".to_string(),
+            mode: "dark".to_string(),
+            background_color: "#161618".to_string(),
+            text_color: "#ececee".to_string(),
+            light_background_color: "#f7f7f8".to_string(),
+            light_text_color: "#1c1c1e".to_string(),
             accent_color: "#4a9eff".to_string(),
-            border_radius: 0.0,
+            border_radius: 14.0,
             font_size: 16,
-            width: 600,
+            width: 640,
         }
     }
 }
@@ -112,7 +158,10 @@ impl Default for SearchConfig {
 
 impl Default for CalculatorConfig {
     fn default() -> Self {
-        Self { enabled: true }
+        Self {
+            enabled: true,
+            currency: true,
+        }
     }
 }
 
@@ -136,8 +185,9 @@ impl Default for ClaudeConfig {
             model: "haiku".to_string(),
             command: "claude".to_string(),
             system_prompt: "You answer questions inside a small desktop launcher. \
-                            Reply in plain text without markdown, as briefly as the question allows: \
-                            usually one to three sentences."
+                            Be brief: usually one to three sentences, more only when asked. \
+                            Light markdown is rendered: `code`, **bold**, short bullet lists \
+                            and fenced code blocks. No headings or tables."
                 .to_string(),
         }
     }
@@ -182,6 +232,10 @@ impl Config {
         };
         self.behavior.max_results = self.behavior.max_results.clamp(1, 20);
         self.behavior.history_size = self.behavior.history_size.min(500);
+        self.clipboard.size = self.clipboard.size.min(200);
+        if !["dark", "light", "system"].contains(&self.theme.mode.as_str()) {
+            self.theme.mode = "dark".to_string();
+        }
         self.files.max_depth = self.files.max_depth.clamp(1, 12);
         let defaults = ClaudeConfig::default();
         if self.claude.model.trim().is_empty() {
@@ -228,6 +282,15 @@ impl Config {
         }
     }
 
+    /// Read the config file as it is now; an error if it is missing or
+    /// does not parse. Used when the file changes while we are running.
+    pub fn load_existing() -> Result<Self, String> {
+        let path = Self::config_path();
+        let contents = fs::read_to_string(&path)
+            .map_err(|e| format!("Could not read {}: {}", path.display(), e))?;
+        Self::parse(&contents).map_err(|e| format!("Invalid config {}: {}", path.display(), e))
+    }
+
     pub fn save(&self) -> Result<(), String> {
         let path = Self::config_path();
         if let Some(parent) = path.parent() {
@@ -251,7 +314,7 @@ mod tests {
     fn partial_file_keeps_other_defaults() {
         let config = Config::parse("[theme]\nfont_size = 20\n").unwrap();
         assert_eq!(config.theme.font_size, 20);
-        assert_eq!(config.theme.width, 600);
+        assert_eq!(config.theme.width, 640);
         assert!(config.calculator.enabled);
         assert!(config.behavior.close_on_focus_loss);
     }
@@ -309,6 +372,13 @@ mod tests {
         assert!(config.claude.enabled);
         let text = toml::to_string(&Config::default()).unwrap().to_lowercase();
         assert!(!text.contains("api_key") && !text.contains("token"));
+    }
+
+    #[test]
+    fn theme_mode_is_validated() {
+        assert_eq!(Config::parse("[theme]\nmode = \"light\"").unwrap().theme.mode, "light");
+        assert_eq!(Config::parse("[theme]\nmode = \"neon\"").unwrap().theme.mode, "dark");
+        assert_eq!(Config::default().theme.mode, "dark");
     }
 
     #[test]

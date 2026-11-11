@@ -1,17 +1,20 @@
 //! What the launcher knows and what it would show for a given query.
-//! No widgets here; `ui.rs` renders `results`.
+//! No widgets here; the `ui` module renders `results`.
 
 use crate::alias::{self, AliasTarget};
 use crate::app_launcher::{App, AppLauncher};
+use crate::clipboard::ClipboardHistory;
 use crate::config::Config;
-use crate::emoji_picker::{Emoji, EmojiPicker};
+use crate::emoji_picker::{self, Emoji, EmojiPicker};
 use crate::files::{self, FileEntry};
 use crate::history::History;
 use crate::matching::Matcher;
 use crate::query::{self, Intent, ParseOptions};
 use crate::search::{self, Engine};
+use crate::system::SystemAction;
 use crate::terminal::Terminal;
-use crate::usage::Usage;
+use crate::units::{self, Rates};
+use crate::usage::{self, Usage};
 use crate::window_switcher::{self, OpenWindow};
 use gtk::gio;
 use std::rc::Rc;
@@ -21,6 +24,7 @@ pub const EMOJI_COLUMNS: usize = 8;
 /// Emoji rows visible at once; the grid scrolls beyond that.
 pub const EMOJI_VISIBLE_ROWS: usize = 3;
 pub const EMOJI_LIMIT: usize = 96;
+const EMOJI_RECENT: usize = 16;
 /// Most results kept for one query. `behavior.max_results` only decides how
 /// many are visible without scrolling.
 pub const RESULT_LIMIT: usize = 50;
@@ -29,28 +33,29 @@ const FILE_INDEX_MAX_AGE: Duration = Duration::from_secs(300);
 const MIN_FILE_QUERY: usize = 2;
 
 #[derive(Clone, Debug, PartialEq)]
-pub enum AskStatus {
+pub enum TurnStatus {
     Thinking,
     Answering,
     Done,
     Failed,
 }
 
-/// The question currently put to Claude and what has come back so far.
+/// One question to Claude and what has come back so far.
 #[derive(Clone, Debug, PartialEq)]
-pub struct Ask {
+pub struct Turn {
     pub question: String,
-    pub model: String,
     pub text: String,
-    pub status: AskStatus,
+    pub status: TurnStatus,
+}
+
+impl Turn {
+    pub fn is_finished(&self) -> bool {
+        matches!(self.status, TurnStatus::Done | TurnStatus::Failed)
+    }
 }
 
 #[derive(Clone, Debug)]
 pub enum ResultItem {
-    /// Offer to send the question; nothing is sent until Enter.
-    Ask { question: String, model: String },
-    /// The answer to the question in the bar, possibly still streaming.
-    Answer(Ask),
     App(App),
     Calc { expression: String, result: String },
     Emoji(Emoji),
@@ -62,9 +67,56 @@ pub enum ResultItem {
     /// A past query; activating it puts it back in the search bar.
     History(String),
     ClearHistory,
+    /// A text from the clipboard history.
+    Clipboard(String),
+    System(SystemAction),
+    /// Second step for a system action that has no confirmation of its own.
+    Confirm(SystemAction),
+    /// Offer to send a question to Claude; nothing is sent until Enter.
+    Ask { question: String, model: String },
+    /// The conversation with Claude so far.
+    Transcript { turns: Vec<Turn>, model: String },
     Settings,
     /// A message row; activating it does nothing.
     Info(String),
+}
+
+/// What kind of thing the current query is, shown next to the search bar.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Mode {
+    Empty,
+    Apps,
+    Files,
+    Windows,
+    Web,
+    Emoji,
+    Calculator,
+    Terminal,
+    Alias,
+    History,
+    Clipboard,
+    Claude,
+    Settings,
+}
+
+impl Mode {
+    pub fn label(self) -> &'static str {
+        match self {
+            Mode::Empty => "",
+            Mode::Apps => "Apps",
+            Mode::Files => "Files",
+            Mode::Windows => "Windows",
+            Mode::Web => "Web",
+            Mode::Emoji => "Emoji",
+            Mode::Calculator => "Calculator",
+            Mode::Terminal => "Terminal",
+            Mode::Alias => "Alias",
+            Mode::History => "History",
+            Mode::Clipboard => "Clipboard",
+            Mode::Claude => "Claude",
+            Mode::Settings => "Settings",
+        }
+    }
 }
 
 pub enum WindowList {
@@ -79,37 +131,61 @@ pub enum WindowList {
 pub struct Needs {
     pub windows: bool,
     pub files: bool,
+    pub rates: bool,
+    /// Start the Claude CLI now so it is ready when the question is sent.
+    pub claude: bool,
 }
 
 pub struct LauncherState {
     pub apps: AppLauncher,
     pub usage: Usage,
     pub history: History,
+    pub emoji_recent: History,
+    pub clipboard: ClipboardHistory,
     pub windows: WindowList,
     pub results: Vec<ResultItem>,
+    pub mode: Mode,
+    /// The part of the query that result titles were matched against.
+    pub highlight: String,
     pub emoji_mode: bool,
-    pub ask: Option<Ask>,
+    /// The conversation with Claude; cleared when the launcher is dismissed.
+    pub chat: Vec<Turn>,
+    rates: Option<Rates>,
+    rates_loading: bool,
+    rates_checked: bool,
     file_index: Option<Rc<Vec<FileEntry>>>,
     file_index_built: Option<Instant>,
     file_index_loading: bool,
-    emoji_picker: Option<EmojiPicker>,
+    emoji_picker: Option<(String, EmojiPicker)>,
     matcher: Matcher,
 }
 
 impl LauncherState {
     pub fn new(config: &Config) -> Self {
-        Self::with_stores(Usage::load(), History::load(config.behavior.history_size))
+        Self::with_stores(
+            Usage::load(),
+            History::load(config.behavior.history_size),
+            History::load_named("emoji_recent.json", EMOJI_RECENT),
+            config,
+        )
     }
 
-    fn with_stores(usage: Usage, history: History) -> Self {
+    fn with_stores(usage: Usage, history: History, emoji_recent: History, config: &Config) -> Self {
         Self {
             apps: AppLauncher::empty(),
             usage,
             history,
+            emoji_recent,
+            clipboard: ClipboardHistory::new(config.clipboard.size),
             windows: WindowList::NotLoaded,
             results: Vec::new(),
+            mode: Mode::Empty,
+            highlight: String::new(),
             emoji_mode: false,
-            ask: None,
+            chat: Vec::new(),
+            rates: None,
+            rates_loading: false,
+            rates_checked: false,
             file_index: None,
             file_index_built: None,
             file_index_loading: false,
@@ -123,18 +199,35 @@ impl LauncherState {
         self.windows = WindowList::NotLoaded;
         self.results.clear();
         self.emoji_mode = false;
-        self.ask = None;
+        self.chat.clear();
     }
 
-    /// True while the only thing shown is Claude's answer.
+    /// True while Claude's conversation is what is shown.
     pub fn answer_mode(&self) -> bool {
-        matches!(self.results.as_slice(), [ResultItem::Answer(_)])
+        matches!(self.results.first(), Some(ResultItem::Transcript { .. }))
+    }
+
+    /// True while an answer is still on its way.
+    pub fn chat_busy(&self) -> bool {
+        self.chat.last().is_some_and(|turn| !turn.is_finished())
+    }
+
+    pub fn matcher(&self) -> &Matcher {
+        &self.matcher
     }
 
     pub fn set_file_index(&mut self, entries: Vec<FileEntry>) {
         self.file_index = Some(Rc::new(entries));
         self.file_index_built = Some(Instant::now());
         self.file_index_loading = false;
+    }
+
+    /// `None` when the download failed; the cached rates, if any, stay.
+    pub fn set_rates(&mut self, rates: Option<Rates>) {
+        if rates.is_some() {
+            self.rates = rates;
+        }
+        self.rates_loading = false;
     }
 
     /// Recompute `results` for `query` and report which background loads the
@@ -146,47 +239,102 @@ impl LauncherState {
             calculator: config.calculator.enabled,
             files: config.files.enabled,
             claude: config.claude.enabled,
+            clipboard: config.clipboard.enabled,
             aliases: config.aliases.clone(),
         };
         self.history.set_capacity(config.behavior.history_size);
+        self.clipboard
+            .set_capacity(if config.clipboard.enabled { config.clipboard.size } else { 0 });
 
         self.emoji_mode = false;
+        self.highlight.clear();
         let mut needs = Needs::default();
 
-        self.results = match query::parse(query, &options) {
-            Intent::Ask(question) => match &self.ask {
-                Some(ask) if ask.question == question => vec![ResultItem::Answer(ask.clone())],
-                _ => vec![ResultItem::Ask {
-                    question,
+        // A conversation takes over the bar: whatever is typed next is a
+        // follow-up, with or without a question mark.
+        if !self.chat.is_empty() && config.claude.enabled {
+            let mut items = vec![ResultItem::Transcript {
+                turns: self.chat.clone(),
+                model: config.claude.model.clone(),
+            }];
+            let question = query.trim();
+            if !question.is_empty() {
+                items.push(ResultItem::Ask {
+                    question: question.to_string(),
                     model: config.claude.model.clone(),
-                }],
-            },
-            Intent::Empty => self
-                .apps
-                .most_used(&self.usage, config.behavior.max_results)
-                .into_iter()
-                .map(|app| ResultItem::App(app.clone()))
-                .collect(),
-            Intent::Settings => vec![ResultItem::Settings],
+                });
+            }
+            self.mode = Mode::Claude;
+            self.results = items;
+            needs.claude = true;
+            return needs;
+        }
+
+        let (mode, results) = match query::parse(query, &options) {
+            Intent::Empty => (
+                Mode::Empty,
+                self.apps
+                    .most_used(&self.usage, config.behavior.max_results)
+                    .into_iter()
+                    .map(|app| ResultItem::App(app.clone()))
+                    .collect(),
+            ),
+            Intent::Ask(question) => {
+                needs.claude = true;
+                (
+                    Mode::Claude,
+                    vec![ResultItem::Ask {
+                        question,
+                        model: config.claude.model.clone(),
+                    }],
+                )
+            }
+            Intent::Settings => (Mode::Settings, vec![ResultItem::Settings]),
             Intent::Windows(filter) => {
                 if matches!(self.windows, WindowList::NotLoaded) {
                     self.windows = WindowList::Loading;
                     needs.windows = true;
                 }
-                self.window_results(&filter)
+                let items = self.window_results(&filter);
+                self.highlight = filter;
+                (Mode::Windows, items)
             }
-            Intent::Search { engine, query } => vec![ResultItem::Search { engine, query }],
+            Intent::Search { engine, query } => {
+                (Mode::Web, vec![ResultItem::Search { engine, query }])
+            }
             Intent::Emoji(filter) => {
                 self.emoji_mode = true;
-                self.emoji_picker
-                    .get_or_insert_with(EmojiPicker::new)
-                    .search(&filter, EMOJI_LIMIT)
+                let tone = config.emoji.skin_tone.clone();
+                if self.emoji_picker.as_ref().map(|(key, _)| key.as_str()) != Some(tone.as_str()) {
+                    self.emoji_picker =
+                        Some((tone.clone(), EmojiPicker::new(emoji_picker::skin_tone(&tone))));
+                }
+                let items = self
+                    .emoji_picker
+                    .as_ref()
+                    .map(|(_, picker)| picker.search(&filter, self.emoji_recent.entries(), EMOJI_LIMIT))
+                    .unwrap_or_default()
                     .into_iter()
                     .map(ResultItem::Emoji)
-                    .collect()
+                    .collect();
+                (Mode::Emoji, items)
             }
-            Intent::Calc { expression, result } => vec![ResultItem::Calc { expression, result }],
-            Intent::Terminal(command) => vec![ResultItem::Terminal(command)],
+            Intent::Calc { expression, result } => {
+                (Mode::Calculator, vec![ResultItem::Calc { expression, result }])
+            }
+            Intent::Convert(request) => {
+                let expression = query.trim().to_string();
+                if let Some(result) = units::convert(&request) {
+                    (Mode::Calculator, vec![ResultItem::Calc { expression, result }])
+                } else if config.calculator.currency && units::looks_like_currency(&request) {
+                    (Mode::Calculator, self.currency_results(&request, expression, &mut needs))
+                } else {
+                    // Not a conversion we know: treat it like any other text.
+                    self.highlight = expression.clone();
+                    (Mode::Apps, self.app_results(&expression, config))
+                }
+            }
+            Intent::Terminal(command) => (Mode::Terminal, vec![ResultItem::Terminal(command)]),
             Intent::Files(filter) => {
                 let stale = self
                     .file_index_built
@@ -196,29 +344,87 @@ impl LauncherState {
                     self.file_index_loading = true;
                     needs.files = true;
                 }
-                self.file_results(&filter)
+                let items = self.file_results(&filter);
+                self.highlight = filter;
+                (Mode::Files, items)
             }
             Intent::Path(path) => {
                 let entries = files::complete_path(&path, RESULT_LIMIT);
-                if entries.is_empty() {
+                let items = if entries.is_empty() {
                     vec![ResultItem::Info("No such file or directory".to_string())]
                 } else {
                     entries.into_iter().map(ResultItem::File).collect()
-                }
+                };
+                (Mode::Files, items)
             }
-            Intent::History(filter) => self.history_results(&filter),
+            Intent::History(filter) => (Mode::History, self.history_results(&filter)),
+            Intent::Clipboard(filter) => {
+                let found = self.clipboard.search(&filter, RESULT_LIMIT);
+                let items = if found.is_empty() {
+                    let message = if self.clipboard.is_empty() {
+                        "Nothing copied yet. Texts on the clipboard while the launcher is open are remembered."
+                    } else {
+                        "No matching clipboard entries"
+                    };
+                    vec![ResultItem::Info(message.to_string())]
+                } else {
+                    found.into_iter().map(ResultItem::Clipboard).collect()
+                };
+                (Mode::Clipboard, items)
+            }
             Intent::Alias {
                 name,
                 template,
                 args,
-            } => vec![ResultItem::Alias {
-                target: alias::expand(&template, &args),
-                name,
-            }],
-            Intent::Apps(query) => self.app_results(&query, config),
+            } => (
+                Mode::Alias,
+                vec![ResultItem::Alias {
+                    target: alias::expand(&template, &args),
+                    name,
+                }],
+            ),
+            Intent::Apps(query) => {
+                let items = self.app_results(&query, config);
+                self.highlight = query;
+                (Mode::Apps, items)
+            }
         };
 
+        self.mode = mode;
+        self.results = results;
         needs
+    }
+
+    fn currency_results(
+        &mut self,
+        request: &units::Request,
+        expression: String,
+        needs: &mut Needs,
+    ) -> Vec<ResultItem> {
+        if !self.rates_checked {
+            self.rates_checked = true;
+            let (cached, stale) = Rates::load_cached();
+            self.rates = cached;
+            if stale {
+                self.rates_loading = true;
+                needs.rates = true;
+            }
+        }
+        match &self.rates {
+            Some(rates) => match rates.convert(request) {
+                Some(result) => vec![ResultItem::Calc {
+                    expression: format!("{}  ·  ECB rate of {}", expression, rates.date),
+                    result,
+                }],
+                None => vec![ResultItem::Info("Unknown currency".to_string())],
+            },
+            None if self.rates_loading => {
+                vec![ResultItem::Info("Fetching exchange rates…".to_string())]
+            }
+            None => vec![ResultItem::Info(
+                "Exchange rates are not available right now".to_string(),
+            )],
+        }
     }
 
     fn window_results(&self, filter: &str) -> Vec<ResultItem> {
@@ -260,7 +466,7 @@ impl LauncherState {
         let Some(index) = &self.file_index else {
             return vec![ResultItem::Info("Indexing files…".to_string())];
         };
-        let found = files::search(filter, index, RESULT_LIMIT);
+        let found = files::search(filter, index, &self.usage, usage::now(), RESULT_LIMIT);
         if found.is_empty() {
             return vec![ResultItem::Info("No matching files".to_string())];
         }
@@ -294,6 +500,33 @@ impl LauncherState {
         found
     }
 
+    /// System actions whose name or keywords match, best first, with whether
+    /// the query names the action exactly.
+    fn system_results(&self, query: &str) -> Vec<(SystemAction, bool)> {
+        let query = query.trim().to_lowercase();
+        if query.chars().count() < 3 {
+            return Vec::new();
+        }
+        let mut found: Vec<(SystemAction, i64)> = SystemAction::ALL
+            .into_iter()
+            .filter_map(|action| {
+                action
+                    .keywords()
+                    .iter()
+                    .filter_map(|keyword| Matcher::strict(&query, keyword))
+                    .max()
+                    // Prefix matches only: "lock" yes, "clock" no.
+                    .filter(|score| *score >= 850)
+                    .map(|score| (action, score))
+            })
+            .collect();
+        found.sort_by(|a, b| b.1.cmp(&a.1));
+        found
+            .into_iter()
+            .map(|(action, _)| (action, action.keywords().contains(&query.as_str())))
+            .collect()
+    }
+
     fn app_results(&self, query: &str, config: &Config) -> Vec<ResultItem> {
         let mut items: Vec<ResultItem> = self
             .apps
@@ -302,13 +535,23 @@ impl LauncherState {
             .map(|app| ResultItem::App(app.clone()))
             .collect();
 
+        // Typing an action's exact name puts it first; otherwise it follows
+        // the applications.
+        for (action, exact) in self.system_results(query).into_iter().rev() {
+            if exact {
+                items.insert(0, ResultItem::System(action));
+            } else {
+                items.push(ResultItem::System(action));
+            }
+        }
+
         // "settings", "poppi", "launcher"... also offer our own settings.
         if query.len() >= 3 && "poppi launcher settings".contains(&query.to_lowercase()) {
             items.push(ResultItem::Settings);
         }
 
         // Apps always come first. A command on $PATH is offered after them,
-        // or leads the list when no app matched.
+        // or leads the list when nothing else matched.
         let had_matches = !items.is_empty();
         if Terminal::looks_like_command(query) {
             items.push(ResultItem::Terminal(query.to_string()));
@@ -332,7 +575,12 @@ mod tests {
     use super::*;
 
     fn state() -> LauncherState {
-        LauncherState::with_stores(Usage::load_from(None), History::load_from(None, 50))
+        LauncherState::with_stores(
+            Usage::load_from(None),
+            History::load_from(None, 50),
+            History::load_from(None, EMOJI_RECENT),
+            &Config::default(),
+        )
     }
 
     #[test]
@@ -340,6 +588,7 @@ mod tests {
         let mut s = state();
         assert_eq!(s.update("", &Config::default()), Needs::default());
         assert!(s.results.is_empty());
+        assert_eq!(s.mode, Mode::Empty);
     }
 
     #[test]
@@ -354,6 +603,8 @@ mod tests {
                 ResultItem::Search { engine: Engine::Chatgpt, .. },
             ]
         ));
+        assert_eq!(s.mode, Mode::Apps);
+        assert_eq!(s.highlight, "zzqqy-no-such-thing");
     }
 
     #[test]
@@ -372,6 +623,7 @@ mod tests {
         assert!(matches!(s.results.as_slice(), [ResultItem::Info(_)]));
         // Still loading: do not start a second load.
         assert!(!s.update("sw k", &config).windows);
+        assert_eq!(s.highlight, "k");
 
         s.windows = WindowList::Loaded(Vec::new());
         assert!(!s.update("sw", &config).windows);
@@ -383,14 +635,30 @@ mod tests {
     }
 
     #[test]
-    fn emoji_mode_is_flagged_and_limited() {
+    fn emoji_mode_lists_recents_first() {
         let mut s = state();
-        s.update(":", &Config::default());
+        let config = Config::default();
+        s.emoji_recent.push("🔥");
+        s.update(":", &config);
         assert!(s.emoji_mode);
+        assert_eq!(s.mode, Mode::Emoji);
         assert_eq!(s.results.len(), EMOJI_LIMIT);
-        s.update("2+2", &Config::default());
+        assert!(matches!(&s.results[0], ResultItem::Emoji(e) if e.emoji == "🔥"));
+
+        s.update("2+2", &config);
         assert!(!s.emoji_mode);
         assert!(matches!(&s.results[0], ResultItem::Calc { result, .. } if result == "4"));
+    }
+
+    #[test]
+    fn emoji_skin_tone_follows_the_config() {
+        let mut s = state();
+        let mut config = Config::default();
+        s.update(":thumbs up", &config);
+        assert!(matches!(&s.results[0], ResultItem::Emoji(e) if e.emoji == "👍"));
+        config.emoji.skin_tone = "dark".to_string();
+        s.update(":thumbs up", &config);
+        assert!(matches!(&s.results[0], ResultItem::Emoji(e) if e.emoji == "👍🏿"));
     }
 
     #[test]
@@ -398,6 +666,57 @@ mod tests {
         let mut s = state();
         s.update("settings", &Config::default());
         assert!(matches!(s.results.as_slice(), [ResultItem::Settings]));
+    }
+
+    #[test]
+    fn system_actions_match_by_prefix_and_lead_when_exact() {
+        let mut s = state();
+        let config = Config::default();
+
+        s.update("lock", &config);
+        assert!(matches!(s.results[0], ResultItem::System(SystemAction::Lock)));
+        s.update("reb", &config);
+        assert!(s.results.iter().any(|r| matches!(r, ResultItem::System(SystemAction::Restart))));
+        s.update("shutdown", &config);
+        assert!(matches!(s.results[0], ResultItem::System(SystemAction::PowerOff)));
+
+        // Not on a substring, and not for very short input.
+        s.update("clock", &config);
+        assert!(!s.results.iter().any(|r| matches!(r, ResultItem::System(_))));
+        s.update("lo", &config);
+        assert!(!s.results.iter().any(|r| matches!(r, ResultItem::System(_))));
+    }
+
+    #[test]
+    fn unit_conversions_are_calculator_results() {
+        let mut s = state();
+        let config = Config::default();
+        s.update("5 km in miles", &config);
+        assert_eq!(s.mode, Mode::Calculator);
+        assert!(matches!(&s.results[0], ResultItem::Calc { result, .. } if result == "3.10686 mi"));
+
+        // Unknown units fall through to an ordinary search.
+        s.update("5 blorps in km", &config);
+        assert_eq!(s.mode, Mode::Apps);
+    }
+
+    #[test]
+    fn currency_conversion_uses_loaded_rates() {
+        let mut s = state();
+        let mut config = Config::default();
+        s.rates_checked = true;
+        s.rates = Rates::parse(r#"{"date":"2026-11-10","rates":{"USD":1.25}}"#);
+        s.update("100 usd in eur", &config);
+        assert!(matches!(
+            &s.results[0],
+            ResultItem::Calc { result, expression } if result == "80.00 EUR" && expression.contains("2026-11-10")
+        ));
+        s.update("100 usd in zzz", &config);
+        assert!(matches!(&s.results[0], ResultItem::Info(m) if m == "Unknown currency"));
+
+        config.calculator.currency = false;
+        s.update("100 usd in eur", &config);
+        assert_eq!(s.mode, Mode::Apps);
     }
 
     #[test]
@@ -422,40 +741,11 @@ mod tests {
 
         assert!(!s.update("f report", &config).files);
         assert!(matches!(&s.results[0], ResultItem::File(f) if f.name == "report.txt"));
+        assert_eq!(s.highlight, "report");
         s.update("f zzzz", &config);
         assert!(matches!(&s.results[0], ResultItem::Info(m) if m == "No matching files"));
         s.update("f r", &config);
         assert!(matches!(&s.results[0], ResultItem::Info(_)));
-    }
-
-    #[test]
-    fn questions_are_offered_then_show_their_answer() {
-        let mut s = state();
-        let config = Config::default();
-
-        s.update("what is rust?", &config);
-        assert!(matches!(
-            s.results.as_slice(),
-            [ResultItem::Ask { question, model }] if question == "what is rust?" && model == "haiku"
-        ));
-        assert!(!s.answer_mode());
-
-        s.ask = Some(Ask {
-            question: "what is rust?".into(),
-            model: "haiku".into(),
-            text: "A language.".into(),
-            status: AskStatus::Done,
-        });
-        s.update("what is rust?", &config);
-        assert!(matches!(s.results.as_slice(), [ResultItem::Answer(a)] if a.text == "A language."));
-        assert!(s.answer_mode());
-
-        // A different question does not show the old answer.
-        s.update("what is go?", &config);
-        assert!(matches!(s.results.as_slice(), [ResultItem::Ask { .. }]));
-
-        s.reset_session();
-        assert!(s.ask.is_none());
     }
 
     #[test]
@@ -479,6 +769,30 @@ mod tests {
     }
 
     #[test]
+    fn clipboard_history_lists_and_respects_the_switch() {
+        let mut s = state();
+        let mut config = Config::default();
+        s.update("clip", &config);
+        assert!(matches!(&s.results[0], ResultItem::Info(_)));
+
+        s.clipboard.push("https://example.com");
+        s.clipboard.push("hello");
+        s.update("clip", &config);
+        assert!(matches!(
+            s.results.as_slice(),
+            [ResultItem::Clipboard(a), ResultItem::Clipboard(b)] if a == "hello" && b == "https://example.com"
+        ));
+        s.update("clip http", &config);
+        assert_eq!(s.results.len(), 1);
+
+        // Turning it off forgets what was stored.
+        config.clipboard.enabled = false;
+        s.update("clip", &config);
+        assert_eq!(s.mode, Mode::Apps);
+        assert!(s.clipboard.is_empty());
+    }
+
+    #[test]
     fn aliases_expand() {
         let mut s = state();
         let mut config = Config::default();
@@ -491,5 +805,60 @@ mod tests {
             ResultItem::Alias { name, target: AliasTarget::Url(url) }
                 if name == "gh" && url == "https://github.com/search?q=gtk4%20rust"
         ));
+    }
+
+    #[test]
+    fn questions_build_a_conversation() {
+        let mut s = state();
+        let config = Config::default();
+
+        // First question: just the offer, and a request to warm up the CLI.
+        let needs = s.update("what is rust?", &config);
+        assert!(needs.claude);
+        assert!(matches!(
+            s.results.as_slice(),
+            [ResultItem::Ask { question, model }] if question == "what is rust?" && model == "haiku"
+        ));
+        assert!(!s.answer_mode());
+
+        // Once asked, the conversation owns the bar. The UI clears the text
+        // after sending, so an empty query shows just the transcript.
+        s.chat.push(Turn {
+            question: "what is rust?".into(),
+            text: "A language.".into(),
+            status: TurnStatus::Thinking,
+        });
+        assert!(s.chat_busy());
+        s.chat[0].status = TurnStatus::Done;
+        assert!(!s.chat_busy());
+        s.update("", &config);
+        assert!(matches!(s.results.as_slice(), [ResultItem::Transcript { turns, .. }] if turns.len() == 1));
+        assert!(s.answer_mode());
+        assert_eq!(s.mode, Mode::Claude);
+
+        // Anything typed now is a follow-up, question mark or not.
+        let needs = s.update("and go", &config);
+        assert!(needs.claude);
+        assert!(matches!(
+            s.results.as_slice(),
+            [ResultItem::Transcript { .. }, ResultItem::Ask { question, .. }] if question == "and go"
+        ));
+        s.update("firefox", &config);
+        assert!(s.answer_mode());
+
+        // Leaving the conversation restores normal behaviour.
+        s.chat.clear();
+        s.update("firefox", &config);
+        assert!(!s.answer_mode());
+        s.update("ask and go", &config);
+        assert!(matches!(&s.results[0], ResultItem::Ask { question, .. } if question == "and go"));
+
+        s.chat.push(Turn {
+            question: "x".into(),
+            text: String::new(),
+            status: TurnStatus::Done,
+        });
+        s.reset_session();
+        assert!(s.chat.is_empty());
     }
 }

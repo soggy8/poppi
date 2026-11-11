@@ -10,14 +10,20 @@ pub struct History {
 }
 
 impl History {
-    fn default_path() -> Option<PathBuf> {
+    fn state_file(name: &str) -> Option<PathBuf> {
         dirs::state_dir()
             .or_else(dirs::data_local_dir)
-            .map(|dir| dir.join("poppi_launcher").join("history.json"))
+            .map(|dir| dir.join("poppi_launcher").join(name))
     }
 
+    /// Past queries.
     pub fn load(capacity: usize) -> Self {
-        Self::load_from(Self::default_path(), capacity)
+        Self::load_from(Self::state_file("history.json"), capacity)
+    }
+
+    /// The same most-recent-first list, used for recently picked emojis.
+    pub fn load_named(file_name: &str, capacity: usize) -> Self {
+        Self::load_from(Self::state_file(file_name), capacity)
     }
 
     pub fn load_from(path: Option<PathBuf>, capacity: usize) -> Self {
