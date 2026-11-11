@@ -4,9 +4,8 @@ Type=Application
 Name=Poppi Launcher
 Comment=Fast application launcher for GNOME
 Exec=poppi_launcher
-Icon=application-x-executable
+Icon=com.poppi.launcher
 Terminal=false
 Categories=Utility;
-StartupNotify=true
+StartupNotify=false
 NoDisplay=true
-

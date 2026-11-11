@@ -1,221 +1,169 @@
-use fuzzy_matcher::FuzzyMatcher;
-use fuzzy_matcher::skim::SkimMatcherV2;
+use crate::utils;
+use crate::matching::Matcher;
 use std::io::Write;
+use std::process::{Command, Stdio};
 
-#[derive(Debug, Clone)]
+/// What a result carries: just the glyph and its name.
+#[derive(Debug, Clone, PartialEq)]
 pub struct Emoji {
-    pub emoji: String,
-    pub name: String,
-    pub keywords: Vec<String>,
+    pub emoji: &'static str,
+    pub name: &'static str,
+}
+
+struct Entry {
+    emoji: Emoji,
+    /// Lowercase name, name words and shortcodes.
+    keywords: Vec<String>,
 }
 
 pub struct EmojiPicker {
-    emojis: Vec<Emoji>,
-    matcher: SkimMatcherV2,
+    entries: Vec<Entry>,
+    matcher: Matcher,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Inserted {
+    Typed,
+    CopiedToClipboard,
 }
 
 impl EmojiPicker {
     pub fn new() -> Self {
-        let emojis = Self::load_emojis();
-        let matcher = SkimMatcherV2::default();
-        Self { emojis, matcher }
-    }
-
-    fn load_emojis() -> Vec<Emoji> {
-        // Load all emojis from the emojis crate
-        let mut emoji_list = Vec::with_capacity(3000); // Pre-allocate for performance
-        
-        for emoji_data in emojis::iter() {
-            let emoji_char = emoji_data.as_str();
-            let name = emoji_data.name().to_string();
-            
-            // Build keywords from name (split by space, underscore, hyphen)
-            let mut keywords = Vec::new();
-            // Add the full name as a keyword
-            keywords.push(name.clone());
-            // Split name into words for better search
-            for word in name.split(&[' ', '_', '-'][..]) {
-                if !word.is_empty() && word.len() > 2 {
-                    keywords.push(word.to_lowercase());
+        let entries = emojis::iter()
+            .map(|data| {
+                let name = data.name();
+                let mut keywords = vec![name.to_lowercase()];
+                keywords.extend(
+                    name.split([' ', '_', '-'])
+                        .filter(|word| word.len() > 2)
+                        .map(str::to_lowercase),
+                );
+                for shortcode in data.shortcodes() {
+                    keywords.push(shortcode.to_lowercase());
                 }
-            }
-            
-            // Add shortcodes as keywords if available
-            for shortcode in emoji_data.shortcodes() {
-                keywords.push(shortcode.to_string());
-                // Also add shortcode parts
-                for part in shortcode.split('-') {
-                    if !part.is_empty() {
-                        keywords.push(part.to_string());
-                    }
+                Entry {
+                    emoji: Emoji {
+                        emoji: data.as_str(),
+                        name,
+                    },
+                    keywords,
                 }
-            }
-            
-            emoji_list.push(Emoji {
-                emoji: emoji_char.to_string(),
-                name,
-                keywords,
-            });
+            })
+            .collect();
+        Self {
+            entries,
+            matcher: Matcher::new(),
         }
-        
-        emoji_list
     }
 
-    pub fn search(&self, query: &str) -> Vec<(&Emoji, i64)> {
+    pub fn search(&self, query: &str, limit: usize) -> Vec<Emoji> {
         if query.is_empty() {
-            return self.emojis.iter().map(|e| (e, 0)).take(24).collect();
+            return self
+                .entries
+                .iter()
+                .take(limit)
+                .map(|e| e.emoji.clone())
+                .collect();
         }
 
-        let query_lower = query.to_lowercase();
-        let mut results: Vec<(&Emoji, i64)> = Vec::with_capacity(24);
-        
-        for emoji in &self.emojis {
-            // Match against name
-            let name_score = self.matcher.fuzzy_match(&emoji.name, &query_lower);
-            
-            // Match against keywords (compute lowercase on the fly is fine for small set)
-            let keyword_score = emoji.keywords.iter()
-                .filter_map(|kw| self.matcher.fuzzy_match(kw, &query_lower))
-                .max();
+        let query = query.to_lowercase();
+        let mut results: Vec<(&Entry, i64)> = self
+            .entries
+            .iter()
+            .filter_map(|entry| {
+                entry
+                    .keywords
+                    .iter()
+                    .filter_map(|kw| self.matcher.score(&query, kw))
+                    .max()
+                    .map(|score| (entry, score))
+            })
+            .collect();
 
-            let score = name_score.unwrap_or(0).max(keyword_score.unwrap_or(0));
-            
-            if score > 0 {
-                results.push((emoji, score));
-            }
-        }
-
-        // Use unstable sort for better performance
-        results.sort_unstable_by(|a, b| b.1.cmp(&a.1));
-        results.truncate(24);
+        // Stable sort keeps the Unicode ordering among equal scores.
+        results.sort_by(|a, b| b.1.cmp(&a.1));
         results
+            .into_iter()
+            .take(limit)
+            .map(|(entry, _)| entry.emoji.clone())
+            .collect()
     }
 
-    pub fn insert_emoji(emoji: &str) -> Result<(), Box<dyn std::error::Error>> {
-        use std::process::Command;
-        use std::io::Write;
-        
-        // Check if we're on Wayland or X11
-        let is_wayland = std::env::var("WAYLAND_DISPLAY").is_ok() || 
-                         std::env::var("XDG_SESSION_TYPE").map(|s| s == "wayland").unwrap_or(false);
-        
-        let mut insertion_successful = false;
-        
-        if is_wayland {
-            // Try wtype for Wayland (if available)
-            if Self::has_command("wtype") {
-                let output = Command::new("wtype")
-                    .arg(emoji)
-                    .output();
-                
-                if let Ok(output) = output {
-                    if output.status.success() {
-                        insertion_successful = true;
-                    }
-                }
-            }
-            
-            // Fallback: try ydotool for Wayland (if available)
-            if !insertion_successful && Self::has_command("ydotool") {
-                let mut child = Command::new("ydotool")
-                    .arg("type")
-                    .arg("--file")
-                    .arg("-")
-                    .stdin(std::process::Stdio::piped())
-                    .spawn();
-                
-                if let Ok(mut child) = child {
-                    if let Some(stdin) = child.stdin.as_mut() {
-                        if stdin.write_all(emoji.as_bytes()).is_ok() {
-                            if child.wait().map(|s| s.success()).unwrap_or(false) {
-                                insertion_successful = true;
-                            }
-                        }
-                    }
-                }
-            }
-        } else {
-            // Try xdotool for X11
-            if Self::has_command("xdotool") {
-                let output = Command::new("xdotool")
-                    .arg("type")
-                    .arg("--clearmodifiers")
-                    .arg(emoji)
-                    .output();
-                
-                if let Ok(output) = output {
-                    if output.status.success() {
-                        insertion_successful = true;
-                    }
-                }
-            }
+    /// Type the emoji into the focused window, or copy it to the clipboard
+    /// when no typing tool works. Call this after the launcher has given up
+    /// focus, otherwise the launcher itself receives the keystrokes.
+    pub fn insert(emoji: &str) -> Result<Inserted, String> {
+        if Self::type_text(emoji) {
+            return Ok(Inserted::Typed);
         }
-        
-        // If insertion failed or no tool available, copy to clipboard
-        if !insertion_successful {
-            Self::copy_to_clipboard(emoji)?;
-        }
-        
-        Ok(())
+        utils::copy_to_clipboard(emoji).map(|()| Inserted::CopiedToClipboard)
     }
-    
-    fn copy_to_clipboard(text: &str) -> Result<(), Box<dyn std::error::Error>> {
-        use std::process::{Command, Stdio};
-        
-        // Try wl-copy for Wayland
-        if Self::has_command("wl-copy") {
-            let mut child = Command::new("wl-copy")
-                .stdin(Stdio::piped())
-                .spawn()?;
-            
-            if let Some(stdin) = child.stdin.as_mut() {
-                stdin.write_all(text.as_bytes())?;
-            }
-            child.wait()?;
-            return Ok(());
+
+    fn type_text(text: &str) -> bool {
+        let succeeded = |command: &mut Command| {
+            command
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false)
+        };
+
+        if !utils::is_wayland() {
+            return utils::has_command("xdotool")
+                && succeeded(Command::new("xdotool").args(["type", "--clearmodifiers", text]));
         }
-        
-        // Try xclip for X11
-        if Self::has_command("xclip") {
-            let mut child = Command::new("xclip")
-                .arg("-selection")
-                .arg("clipboard")
-                .stdin(Stdio::piped())
-                .spawn()?;
-            
-            if let Some(stdin) = child.stdin.as_mut() {
-                stdin.write_all(text.as_bytes())?;
-            }
-            child.wait()?;
-            return Ok(());
+
+        // wtype needs the virtual-keyboard protocol (wlroots compositors;
+        // GNOME does not provide it, so this fails there and we fall through).
+        if utils::has_command("wtype") && succeeded(Command::new("wtype").arg(text)) {
+            return true;
         }
-        
-        // Try xsel as fallback
-        if Self::has_command("xsel") {
-            let mut child = Command::new("xsel")
-                .arg("--clipboard")
-                .arg("--input")
+
+        if utils::has_command("ydotool") {
+            let child = Command::new("ydotool")
+                .args(["type", "--file", "-"])
                 .stdin(Stdio::piped())
-                .spawn()?;
-            
-            if let Some(stdin) = child.stdin.as_mut() {
-                stdin.write_all(text.as_bytes())?;
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn();
+            if let Ok(mut child) = child {
+                let written = child
+                    .stdin
+                    .take()
+                    .map(|mut stdin| stdin.write_all(text.as_bytes()).is_ok())
+                    .unwrap_or(false);
+                let exited_ok = child.wait().map(|s| s.success()).unwrap_or(false);
+                return written && exited_ok;
             }
-            child.wait()?;
-            return Ok(());
         }
-        
-        Err("No clipboard tool available (wl-copy, xclip, or xsel)".into())
-    }
-    
-    fn has_command(cmd: &str) -> bool {
-        use std::process::Command;
-        Command::new("sh")
-            .arg("-c")
-            .arg(&format!("command -v {}", cmd))
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false)
+        false
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn empty_query_returns_the_first_emojis() {
+        let picker = EmojiPicker::new();
+        assert_eq!(picker.search("", 24).len(), 24);
+    }
+
+    #[test]
+    fn search_finds_by_name_and_shortcode() {
+        let picker = EmojiPicker::new();
+        let fire = picker.search("fire", 24);
+        assert!(fire.iter().any(|e| e.emoji == "🔥"));
+        let thumbs = picker.search("+1", 24);
+        assert!(thumbs.iter().any(|e| e.emoji == "👍"));
+        assert!(picker.search("zzzzqqqqxxxx", 24).is_empty());
+    }
+
+    #[test]
+    fn search_is_case_insensitive() {
+        let picker = EmojiPicker::new();
+        assert_eq!(picker.search("FIRE", 5), picker.search("fire", 5));
+    }
+}

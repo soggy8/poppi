@@ -1,20 +1,20 @@
 [package]
 name = "poppi_launcher"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
+description = "Fast application launcher for GNOME"
+license = "MIT"
+repository = "https://github.com/soggy8/poppi"
 
 [dependencies]
+# glib, gio and gdk are used through the gtk4 re-exports.
 gtk = { version = "0.9", package = "gtk4", features = ["v4_12"] }
-glib = { version = "0.21", features = [] }
-gio = { version = "0.21", features = ["v2_80"] }
-gtk4-layer-shell = "0.4"
 fuzzy-matcher = "0.3"
 emojis = "0.5"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-toml = { version = "0.8", features = ["preserve_order"] }
+toml = "0.8"
 dirs = "5.0"
-meval = "0.2"
 urlencoding = "2.1"
 
 [profile.release]
@@ -23,6 +23,3 @@ lto = "fat"
 codegen-units = 1
 strip = true
 panic = "abort"
-
-[profile.release.package."*"]
-opt-level = 3

@@ -1,0 +1,319 @@
+/*
+ * Poppi Launcher styles. Every rule is scoped to .poppi-launcher or
+ * .poppi-settings so the two windows never restyle each other.
+ *
+ * Tokens in double curly braces are filled in from the config by style.rs.
+ * GTK CSS has no "important" flag; specificity and provider priority decide.
+ */
+
+@keyframes poppi-fade-in {
+    from { opacity: 0; }
+    to { opacity: 1; }
+}
+
+@keyframes poppi-slide-down {
+    from { opacity: 0; transform: translateY(-10px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+/* ---------- Launcher ---------- */
+
+window.poppi-launcher {
+    background-color: transparent;
+    border: none;
+}
+
+.poppi-launcher .launcher-box {
+    background-color: {{background}};
+    border-radius: {{radius}}px;
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.8);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    animation: poppi-fade-in 0.15s ease-out;
+}
+
+.poppi-launcher entry {
+    background-color: rgba(20, 20, 20, 0.9);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 0px;
+    min-height: 34px;
+    padding: 12px 16px;
+    font-size: {{font_size}}pt;
+    color: {{text}};
+    caret-color: {{accent}};
+    transition: border-color 0.2s ease, background-color 0.2s ease;
+}
+
+.poppi-launcher entry:focus-within {
+    border-color: {{accent}};
+    background-color: rgba(15, 15, 15, 0.95);
+    box-shadow: inset 0 0 0 1px {{accent}};
+    outline: none;
+}
+
+.poppi-launcher entry > image {
+    color: alpha({{text}}, 0.45);
+    margin-right: 10px;
+}
+
+.poppi-launcher entry > text > placeholder {
+    color: alpha({{text}}, 0.35);
+}
+
+.poppi-launcher entry > text > selection {
+    background-color: alpha({{accent}}, 0.35);
+    color: {{text}};
+}
+
+.poppi-launcher scrolledwindow,
+.poppi-launcher list {
+    background-color: transparent;
+}
+
+.poppi-launcher scrolledwindow undershoot,
+.poppi-launcher scrolledwindow overshoot {
+    background: none;
+}
+
+.poppi-launcher scrollbar {
+    background-color: transparent;
+    border: none;
+}
+
+.poppi-launcher scrollbar slider {
+    min-width: 4px;
+    border-radius: 4px;
+    background-color: alpha({{text}}, 0.25);
+}
+
+.poppi-launcher row {
+    background-color: rgba(20, 20, 20, 0.6);
+    border: none;
+    border-top: 1px solid rgba(255, 255, 255, 0.04);
+    border-radius: 0px;
+    padding: 9px 16px;
+    margin: 0px;
+    outline: none;
+    transition: background-color 0.12s ease, box-shadow 0.12s ease;
+    animation: poppi-slide-down 0.18s ease-out backwards;
+}
+
+.poppi-launcher row:nth-child(1) { animation-delay: 0.00s; }
+.poppi-launcher row:nth-child(2) { animation-delay: 0.02s; }
+.poppi-launcher row:nth-child(3) { animation-delay: 0.04s; }
+.poppi-launcher row:nth-child(4) { animation-delay: 0.06s; }
+.poppi-launcher row:nth-child(5) { animation-delay: 0.08s; }
+
+.poppi-launcher row:hover {
+    background-color: rgba(34, 34, 34, 0.8);
+}
+
+/* The selected row: lighter, with an accent bar on the left edge. */
+.poppi-launcher row:selected {
+    background-color: alpha({{accent}}, 0.14);
+    box-shadow: inset 3px 0 0 {{accent}};
+}
+
+.poppi-launcher label {
+    color: {{text}};
+    font-size: {{font_size}}pt;
+}
+
+.poppi-launcher .row-title {
+    font-weight: 500;
+}
+
+.poppi-launcher .row-subtitle {
+    color: alpha({{text}}, 0.5);
+    font-size: 9pt;
+}
+
+/* Names what Enter does; only shown on the selected row. */
+.poppi-launcher .row-hint {
+    color: alpha({{text}}, 0.55);
+    font-size: 8.5pt;
+    padding: 2px 8px;
+    border: 1px solid alpha({{text}}, 0.18);
+    border-radius: 4px;
+    opacity: 0;
+    transition: opacity 0.12s ease;
+}
+
+.poppi-launcher row:selected .row-hint {
+    opacity: 1;
+}
+
+.poppi-launcher .info-row .row-title {
+    color: alpha({{text}}, 0.6);
+    font-weight: normal;
+}
+
+.poppi-launcher row.answer-row,
+.poppi-launcher row.answer-row:selected,
+.poppi-launcher row.answer-row:hover {
+    background-color: rgba(20, 20, 20, 0.6);
+    box-shadow: inset 3px 0 0 {{accent}};
+    padding: 12px 18px 14px 18px;
+    /* The row is rebuilt as text streams in; a restarting fade would keep it dim. */
+    animation: none;
+    transition: none;
+}
+
+.poppi-launcher .answer-header {
+    color: alpha({{text}}, 0.5);
+    font-size: 8.5pt;
+}
+
+.poppi-launcher .answer-text {
+    font-size: 12pt;
+}
+
+.poppi-launcher .answer-error {
+    color: #ff8f8f;
+    font-size: 11pt;
+}
+
+.poppi-launcher .row-symbol {
+    color: alpha({{text}}, 0.7);
+}
+
+.poppi-launcher row:selected .row-symbol {
+    color: {{accent}};
+}
+
+.poppi-launcher .info-row .row-symbol {
+    color: alpha({{text}}, 0.4);
+}
+
+.poppi-launcher button.emoji-button {
+    background: none;
+    background-color: transparent;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    box-shadow: none;
+    outline: none;
+    padding: 6px;
+    transition: background-color 0.12s ease;
+}
+
+.poppi-launcher button.emoji-button label {
+    font-size: 24px;
+}
+
+.poppi-launcher button.emoji-button:hover {
+    background-color: rgba(40, 40, 40, 0.8);
+}
+
+.poppi-launcher button.emoji-button.selected {
+    background-color: alpha({{accent}}, 0.18);
+    border-color: alpha({{accent}}, 0.7);
+}
+
+/* ---------- Settings ---------- */
+
+window.poppi-settings {
+    background-color: #2e2e2e;
+    color: #e0e0e0;
+}
+
+.poppi-settings label {
+    color: #e0e0e0;
+}
+
+.poppi-settings .section-title {
+    font-weight: bold;
+    margin-top: 12px;
+}
+
+.poppi-settings .hint {
+    color: rgba(224, 224, 224, 0.6);
+    font-size: 9pt;
+}
+
+.poppi-settings entry,
+.poppi-settings spinbutton,
+.poppi-settings dropdown > button {
+    background-image: none;
+    background-color: #1e1e1e;
+    color: #e0e0e0;
+    border: 1px solid #4a4a4a;
+    border-radius: 4px;
+    box-shadow: none;
+}
+
+.poppi-settings entry {
+    padding: 6px;
+}
+
+.poppi-settings entry:focus-within {
+    border-color: #4a9eff;
+    outline: none;
+}
+
+.poppi-settings entry.error {
+    border-color: #e5484d;
+}
+
+.poppi-settings spinbutton > text {
+    background-color: transparent;
+    color: #e0e0e0;
+}
+
+.poppi-settings spinbutton > button {
+    background-image: none;
+    background-color: transparent;
+    color: #e0e0e0;
+    border: none;
+    box-shadow: none;
+}
+
+.poppi-settings spinbutton > button:hover {
+    background-color: #3a3a3a;
+}
+
+.poppi-settings checkbutton > check {
+    background-image: none;
+    background-color: #1e1e1e;
+    border: 1px solid #4a4a4a;
+    color: #e0e0e0;
+}
+
+.poppi-settings checkbutton > check:checked {
+    background-color: #4a9eff;
+    border-color: #4a9eff;
+    color: #0a0a0a;
+}
+
+.poppi-settings button.settings-button {
+    background-image: none;
+    background-color: #3e3e3e;
+    color: #e0e0e0;
+    border: 1px solid #4a4a4a;
+    border-radius: 4px;
+    box-shadow: none;
+    padding: 8px 16px;
+    font-size: 14px;
+}
+
+.poppi-settings button.settings-button:hover {
+    background-color: #4a4a4a;
+    border-color: #5a5a5a;
+}
+
+.poppi-settings button.settings-button:active {
+    background-color: #2a2a2a;
+}
+
+.poppi-settings button.settings-button.primary {
+    background-color: #4a9eff;
+    border-color: #4a9eff;
+    color: #0a0a0a;
+}
+
+.poppi-settings button.settings-button.primary label {
+    color: #0a0a0a;
+}
+
+.poppi-settings button.settings-button.primary:hover {
+    background-color: #6ab0ff;
+    border-color: #6ab0ff;
+}

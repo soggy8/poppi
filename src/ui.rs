@@ -1,1076 +1,877 @@
-use crate::app_launcher::{App, AppLauncher};
-use crate::calculator::Calculator;
+//! The launcher window: widgets, keyboard handling and running results.
+
+use crate::alias;
+use crate::app_launcher::AppLauncher;
+use crate::claude;
 use crate::config::Config;
-use crate::emoji_picker::{Emoji, EmojiPicker};
-use crate::search::WebSearch;
+use crate::emoji_picker::EmojiPicker;
+use crate::files::{self, FileEntry};
+use crate::rows;
+use crate::search;
 use crate::settings::SettingsWindow;
+use crate::state::{
+    Ask, AskStatus, LauncherState, ResultItem, WindowList, EMOJI_COLUMNS, EMOJI_VISIBLE_ROWS,
+};
 use crate::terminal::Terminal;
-use crate::window_switcher::{OpenWindow, WindowSwitcher};
+use crate::utils;
+use crate::window_switcher;
 use gtk::prelude::*;
-use gtk::glib;
-use gtk::gdk;
-use gtk::{Application, Entry, ListBox, ListBoxRow, Box as GtkBox, Label, Window, ScrolledWindow, EventControllerKey, Grid, Button, Image};
-use std::sync::{Arc, Mutex};
-use std::io::Write;
-use std::thread;
+use gtk::{gdk, gio, glib};
+use gtk::{
+    Application, Box as GtkBox, Button, Entry, EventControllerKey, Grid, ListBox, ScrolledWindow,
+    Window,
+};
+use std::cell::{Cell, RefCell};
+use std::rc::Rc;
+use std::time::Duration;
 
-pub struct LauncherState {
-    pub app_launcher: AppLauncher,
-    pub emoji_picker: EmojiPicker,
-    pub window_switcher: WindowSwitcher,
-    pub open_windows: Vec<OpenWindow>, // Cached list of open windows
-    pub current_mode: Mode,
-    pub results: Vec<ResultItem>,
-    pub displayed_results: Vec<ResultItem>, // Results currently shown in UI
-    pub selected_index: usize, // Currently selected item index
+const ENTRY_HEIGHT: i32 = 60;
+/// The window starts taller than its content (the rest is transparent) so the
+/// compositor centres it with room for results below the search bar.
+const INITIAL_HEIGHT: i32 = 500;
+const EMOJI_SPACING: i32 = 6;
+const EMOJI_MARGIN: i32 = 10;
+/// Time for focus to return to the previous window before typing an emoji.
+const FOCUS_RETURN_DELAY: Duration = Duration::from_millis(200);
+/// Tallest an answer from Claude gets before it scrolls.
+const ANSWER_MAX_HEIGHT: i32 = 380;
+const ANSWER_POLL_INTERVAL: Duration = Duration::from_millis(40);
+const ANSWER_SCROLL_STEP: f64 = 48.0;
+
+thread_local! {
+    static LAUNCHER: RefCell<Option<Rc<Launcher>>> = const { RefCell::new(None) };
 }
 
-#[derive(Clone, Debug)]
-pub enum Mode {
-    Apps,
-    Calculator,
-    Emoji,
-    Terminal,
-    Search,
-    WindowSwitch,
+struct Launcher {
+    app: Application,
+    window: Window,
+    entry: Entry,
+    list_box: ListBox,
+    emoji_grid: Grid,
+    results_container: GtkBox,
+    scrolled: ScrolledWindow,
+    config: Rc<RefCell<Config>>,
+    state: RefCell<LauncherState>,
+    emoji_buttons: RefCell<Vec<Button>>,
+    emoji_selected: Cell<usize>,
+    /// Position while stepping through history with Alt+Up/Down.
+    history_position: Cell<Option<usize>>,
+    /// Set while we change the entry text ourselves during history stepping.
+    recalling: Cell<bool>,
+    dismissing: Cell<bool>,
+    /// The Claude request in flight, if any.
+    claude_request: RefCell<Option<claude::Request>>,
+    /// Bumped per request so a stale poll timer stops itself.
+    claude_generation: Cell<u64>,
 }
 
-#[derive(Clone, Debug)]
-pub enum ResultItem {
-    App(App),
-    CalculatorResult(String),
-    Emoji(Emoji),
-    TerminalCommand(String),
-    SearchQuery { engine: String, query: String },
-    OpenWindow(OpenWindow),
-    Settings,
-}
-
-impl LauncherState {
-    pub fn new() -> Self {
-        Self {
-            app_launcher: AppLauncher::empty(), // Start with empty launcher for lazy loading
-            emoji_picker: EmojiPicker::new(),
-            window_switcher: WindowSwitcher::new(),
-            open_windows: Vec::new(),
-            current_mode: Mode::Apps,
-            results: Vec::new(),
-            displayed_results: Vec::new(),
-            selected_index: 0,
+/// Entry point for every invocation: the first one builds the window, later
+/// ones (forwarded from a second process by GApplication) toggle it.
+pub fn activate(app: &Application, config: &Rc<RefCell<Config>>, config_error: Option<&str>) {
+    let existing = LAUNCHER.with(|slot| slot.borrow().clone());
+    match existing {
+        Some(launcher) if launcher.window.is_visible() => launcher.dismiss(),
+        Some(launcher) => launcher.show(),
+        None => {
+            let launcher = Launcher::build(app, config.clone(), config_error);
+            LAUNCHER.with(|slot| *slot.borrow_mut() = Some(launcher.clone()));
+            launcher.show();
         }
-    }
-
-    pub fn set_app_launcher(&mut self, app_launcher: AppLauncher) {
-        self.app_launcher = app_launcher;
-    }
-
-    pub fn is_app_launcher_loaded(&self) -> bool {
-        !self.app_launcher.apps().is_empty()
-    }
-
-    pub fn update_query(&mut self, query: &str) {
-        let query = query.trim();
-        
-        // Determine mode based on query
-        if query.is_empty() {
-            self.current_mode = Mode::Apps;
-            self.results = self.app_launcher
-                .search("")
-                .into_iter()
-                .map(|(app, _)| ResultItem::App((*app).clone()))
-                .collect();
-            return;
-        }
-
-        // Check for settings
-        if query == "poppi settings" || query == "settings" || query.starts_with("poppi settings ") {
-            self.current_mode = Mode::Apps;
-            self.results = vec![ResultItem::Settings];
-            return;
-        }
-
-        // Check for window switch mode
-        if query == "sw" || query.starts_with("sw ") || query == "switch" || query.starts_with("switch ") {
-            self.current_mode = Mode::WindowSwitch;
-            let window_query = if query == "sw" || query == "switch" {
-                ""
-            } else {
-                query.strip_prefix("sw ").unwrap_or(query.strip_prefix("switch ").unwrap_or(query))
-            };
-            
-            // Only fetch windows if cache is empty (lazy loading)
-            // This prevents blocking the UI on every keystroke
-            if self.open_windows.is_empty() {
-                // Try to get windows, but don't block if it fails
-                if let Ok(windows) = self.window_switcher.get_open_windows() {
-                    if !windows.is_empty() {
-                        self.open_windows = windows;
-                    }
-                }
-            }
-            
-            // Search windows (even if empty, to show empty state)
-            let window_results = self.window_switcher.search(window_query, &self.open_windows);
-            self.results = window_results
-                .into_iter()
-                .map(|(window, _)| ResultItem::OpenWindow((*window).clone()))
-                .collect();
-            
-            // If no results and no windows, show a helpful message
-            if self.results.is_empty() && self.open_windows.is_empty() {
-                // Try to get windows one more time to see if there's an error
-                match self.window_switcher.get_open_windows() {
-                    Ok(windows) if !windows.is_empty() => {
-                        self.open_windows = windows;
-                        let window_results = self.window_switcher.search(window_query, &self.open_windows);
-                        self.results = window_results
-                            .into_iter()
-                            .map(|(window, _)| ResultItem::OpenWindow((*window).clone()))
-                            .collect();
-                    }
-                    Ok(_) => {
-                        self.results = vec![ResultItem::SearchQuery {
-                            engine: "info".to_string(),
-                            query: "No open windows found".to_string(),
-                        }];
-                    }
-                    Err(e) => {
-                        self.results = vec![ResultItem::SearchQuery {
-                            engine: "error".to_string(),
-                            query: format!("Error: {}. Try: wmctrl -l", e),
-                        }];
-                    }
-                }
-            }
-            return;
-        }
-        
-        // Clear window cache when leaving window switch mode
-        if !matches!(self.current_mode, Mode::WindowSwitch) {
-            self.open_windows.clear();
-        }
-
-        // Check for search prefixes
-        if query.starts_with("yt ") || query.starts_with("youtube ") {
-            self.current_mode = Mode::Search;
-            let search_query = query.strip_prefix("yt ").unwrap_or(query.strip_prefix("youtube ").unwrap_or(query));
-            self.results = vec![ResultItem::SearchQuery {
-                engine: "youtube".to_string(),
-                query: search_query.to_string(),
-            }];
-            return;
-        }
-
-        if query.starts_with("gpt ") || query.starts_with("chatgpt ") {
-            self.current_mode = Mode::Search;
-            let search_query = query.strip_prefix("gpt ").unwrap_or(query.strip_prefix("chatgpt ").unwrap_or(query));
-            self.results = vec![ResultItem::SearchQuery {
-                engine: "chatgpt".to_string(),
-                query: search_query.to_string(),
-            }];
-            return;
-        }
-
-        if query.starts_with("google ") {
-            self.current_mode = Mode::Search;
-            let search_query = query.strip_prefix("google ").unwrap_or(query);
-            self.results = vec![ResultItem::SearchQuery {
-                engine: "google".to_string(),
-                query: search_query.to_string(),
-            }];
-            return;
-        }
-
-        // Check for emoji mode
-        if query.starts_with("emoji ") || query.starts_with(":") {
-            self.current_mode = Mode::Emoji;
-            let emoji_query = query.strip_prefix("emoji ").unwrap_or(query.strip_prefix(":").unwrap_or(query));
-            self.results = self.emoji_picker
-                .search(emoji_query)
-                .into_iter()
-                .map(|(emoji, _)| ResultItem::Emoji((*emoji).clone()))
-                .collect();
-            return;
-        }
-
-        // Check for calculator
-        if Calculator::is_calculation(query) {
-            self.current_mode = Mode::Calculator;
-            match Calculator::evaluate(query) {
-                Ok(result) => {
-                    self.results = vec![ResultItem::CalculatorResult(
-                        Calculator::format_result(result)
-                    )];
-                }
-                Err(_) => {
-                    // If calculation fails, fall back to app search
-                    self.current_mode = Mode::Apps;
-                    self.results = self.app_launcher
-                        .search(query)
-                        .into_iter()
-                        .map(|(app, _)| ResultItem::App((*app).clone()))
-                        .collect();
-                }
-            }
-            return;
-        }
-
-        // Check for terminal commands
-        if Terminal::is_terminal_command(query) {
-            self.current_mode = Mode::Terminal;
-            self.results = vec![ResultItem::TerminalCommand(query.to_string())];
-            return;
-        }
-
-        // Default: app search
-        self.current_mode = Mode::Apps;
-        let app_results: Vec<ResultItem> = self.app_launcher
-            .search(query)
-            .into_iter()
-            .map(|(app, _)| ResultItem::App((*app).clone()))
-            .collect();
-        
-        // If no app results found, add search options as fallback
-        if app_results.is_empty() && !query.is_empty() {
-            self.results = vec![
-                ResultItem::SearchQuery {
-                    engine: "youtube".to_string(),
-                    query: query.to_string(),
-                },
-                ResultItem::SearchQuery {
-                    engine: "google".to_string(),
-                    query: query.to_string(),
-                },
-                ResultItem::SearchQuery {
-                    engine: "chatgpt".to_string(),
-                    query: query.to_string(),
-                },
-            ];
-        } else {
-            self.results = app_results;
-        }
-    }
-
-    pub fn execute_selected(&self, index: usize) -> Result<(), Box<dyn std::error::Error>> {
-        // Use displayed_results instead of results
-        if index >= self.displayed_results.len() {
-            return Err("Index out of bounds".into());
-        }
-
-        match &self.displayed_results[index] {
-            ResultItem::App(app) => {
-                self.app_launcher.launch(app)?;
-            }
-            ResultItem::CalculatorResult(result) => {
-                // Copy result to clipboard
-                use std::process::{Command, Stdio};
-                let mut child = Command::new("xclip")
-                    .arg("-selection")
-                    .arg("clipboard")
-                    .stdin(Stdio::piped())
-                    .spawn()?;
-                if let Some(stdin) = child.stdin.as_mut() {
-                    stdin.write_all(result.as_bytes())?;
-                }
-            }
-            ResultItem::Emoji(emoji) => {
-                EmojiPicker::insert_emoji(&emoji.emoji)?;
-            }
-            ResultItem::TerminalCommand(cmd) => {
-                Terminal::execute_command(cmd)?;
-            }
-            ResultItem::SearchQuery { engine, query } => {
-                match engine.as_str() {
-                    "youtube" => WebSearch::search_youtube(query)?,
-                    "chatgpt" => WebSearch::search_chatgpt(query)?,
-                    "google" => WebSearch::search_google(query)?,
-                    _ => {}
-                }
-            }
-            ResultItem::OpenWindow(window) => {
-                WindowSwitcher::switch_to_window(window)?;
-            }
-            ResultItem::Settings => {
-                // Settings will be handled in the UI callback with app and config
-                // This is a placeholder - actual opening happens in the UI
-            }
-        }
-
-        Ok(())
     }
 }
 
-pub fn build_ui(app: &Application, config: Config) {
-    let state = Arc::new(Mutex::new(LauncherState::new()));
-    let config_arc = Arc::new(Mutex::new(config.clone()));
-    let app_clone = app.clone();
-    let config_for_css = config.clone();
+impl Launcher {
+    fn build(app: &Application, config: Rc<RefCell<Config>>, config_error: Option<&str>) -> Rc<Self> {
+        let width = config.borrow().theme.width;
 
-    // Fixed width, dynamic height based on results
-    let window_width = 600;
-    let entry_height = 60; // Height for just the search bar
-    let row_height = 50; // Approximate height per result row
-    let max_results = 5;
+        let window = Window::builder()
+            .application(app)
+            .title("Poppi Launcher")
+            .default_width(width)
+            .default_height(INITIAL_HEIGHT)
+            .decorated(false)
+            .resizable(false)
+            .build();
+        window.add_css_class("poppi-launcher");
 
-    // Create main window - fixed width, tall height for positioning (GNOME centers windows)
-    // The window background is transparent so only the content shows
-    let window_height = 500;
-    
-    let window = Window::builder()
-        .application(app)
-        .title("Poppi Launcher")
-        .default_width(window_width)
-        .default_height(window_height)
-        .decorated(false)
-        .resizable(false)
-        .build();
+        let main_box = GtkBox::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .valign(gtk::Align::Start)
+            .build();
+        main_box.add_css_class("launcher-box");
+        // Clip children to the rounded corners.
+        main_box.set_overflow(gtk::Overflow::Hidden);
 
-    // Main container - align content to top
-    let main_box = GtkBox::builder()
-        .orientation(gtk::Orientation::Vertical)
-        .spacing(1)
-        .valign(gtk::Align::Start) // Align content to top
-        .build();
-    main_box.add_css_class("launcher-box");
-
-    // Search entry
-    let entry = Entry::builder()
-        .placeholder_text("Search apps, calculate, emoji, or run commands...")
-        .build();
-
-    // Results list
-    let list_box = ListBox::new();
-    // Grid for emoji display
-    let emoji_grid = Grid::new();
-    emoji_grid.set_row_spacing(8);
-    emoji_grid.set_column_spacing(8);
-    emoji_grid.set_margin_start(10);
-    emoji_grid.set_margin_end(10);
-    emoji_grid.set_margin_top(10);
-    emoji_grid.set_margin_bottom(10);
-    
-    // Container box that can hold either list_box or emoji_grid
-    let results_container = GtkBox::builder()
-        .orientation(gtk::Orientation::Vertical)
-        .build();
-    results_container.append(&list_box);
-    
-    let scrolled = ScrolledWindow::builder()
-        .child(&results_container)
-        .min_content_width(window_width - 40)
-        .hscrollbar_policy(gtk::PolicyType::Never)
-        .vscrollbar_policy(gtk::PolicyType::Never)
-        .build();
-    
-    // Initially hide the results list
-    scrolled.set_visible(false);
-
-    // Apply CSS styling with animations
-    let css = format!(
-        r#"
-        @keyframes fadeIn {{
-            from {{
-                opacity: 0;
-            }}
-            to {{
-                opacity: 1;
-            }}
-        }}
-        
-        @keyframes slideDown {{
-            from {{
-                opacity: 0;
-                transform: translateY(-10px);
-            }}
-            to {{
-                opacity: 1;
-                transform: translateY(0);
-            }}
-        }}
-        
-        window {{
-            background-color: transparent;
-            border: none;
-        }}
-        
-        .launcher-box {{
-            background-color: {};
-            border-radius: 0px;
-            border: 0.5px solid rgba(46, 46, 46, 0.2);
-            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.8);
-            animation: fadeIn 0.15s ease-out;
-        }}
-        
-        decoration {{
-            border: none;
-        }}
-        
-        entry {{
-            background-color: rgba(20, 20, 20, 0.9);
-            border: 1px solid rgba(255, 255, 255, 0.1);
-            border-radius: 0px;
-            padding: 12px;
-            font-size: {}pt;
-            color: {};
-            transition: border-color 0.2s ease, background-color 0.2s ease;
-        }}
-        
-        entry:focus {{
-            border-color: {};
-            background-color: rgba(15, 15, 15, 0.95);
-            box-shadow: inset 0 0 0 1px {};
-        }}
-        
-        list {{
-            background-color: transparent;
-        }}
-        
-        row {{
-            background-color: rgba(20, 20, 20, 0.6);
-            border: none;
-            border-top: 1px solid rgba(255, 255, 255, 0.05);
-            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
-            border-radius: 0px;
-            padding: 12px;
-            margin: 0px;
-            transition: background-color 0.15s ease, transform 0.1s ease;
-            animation: slideDown 0.2s ease-out backwards;
-        }}
-        
-        row:nth-child(1) {{
-            animation-delay: 0.02s;
-        }}
-        
-        row:nth-child(2) {{
-            animation-delay: 0.04s;
-        }}
-        
-        row:nth-child(3) {{
-            animation-delay: 0.06s;
-        }}
-        
-        row:nth-child(4) {{
-            animation-delay: 0.08s;
-        }}
-        
-        row:nth-child(5) {{
-            animation-delay: 0.10s;
-        }}
-        
-        row:hover {{
-            background-color: rgba(30, 30, 30, 0.8);
-            transform: translateX(2px);
-        }}
-        
-        row:selected {{
-            background-color: rgba(40, 40, 40, 0.95);
-            border-top: 1px solid rgba(255, 255, 255, 0.15);
-            border-bottom: 1px solid rgba(255, 255, 255, 0.15);
-        }}
-        
-        label {{
-            color: {};
-            font-size: {}pt;
-        }}
-        
-        .app-name {{
-            color: {};
-            font-size: {}pt;
-            font-weight: 500;
-        }}
-        
-        .app-description {{
-            color: rgba(255, 255, 255, 0.5);
-            font-size: 9pt;
-        }}
-        
-        .app-icon {{
-            opacity: 0.9;
-        }}
-        
-        button.emoji-button {{
-            background-color: transparent;
-            background: transparent;
-            border: none;
-            border-radius: 0px;
-            padding: 8px;
-            font-size: 24px;
-            transition: background-color 0.15s ease;
-        }}
-        
-        button.emoji-button:hover {{
-            background-color: rgba(40, 40, 40, 0.8);
-        }}
-        
-        button.emoji-button.selected {{
-            background-color: rgba(40, 40, 40, 0.95);
-            border: 1px solid rgba(255, 255, 255, 0.15);
-        }}
-        
-        button.emoji-button.emoji-placeholder {{
-            color: transparent;
-            background-color: transparent;
-        }}
-        
-        button.emoji-button.emoji-placeholder:hover {{
-            background-color: transparent;
-        }}
-        "#,
-        config_for_css.theme.background_color, // launcher-box background
-        config_for_css.theme.font_size,         // entry font-size
-        config_for_css.theme.text_color,        // entry color
-        config_for_css.theme.accent_color,      // entry:focus border-color
-        config_for_css.theme.accent_color,      // entry:focus box-shadow
-        config_for_css.theme.text_color,        // label color
-        config_for_css.theme.font_size,         // label font-size
-        config_for_css.theme.text_color,        // app-name color
-        config_for_css.theme.font_size,         // app-name font-size
-    );
-
-    let provider = gtk::CssProvider::new();
-    provider.load_from_data(&css);
-    gtk::style_context_add_provider_for_display(
-        &gdk::Display::default().unwrap(),
-        &provider,
-        gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
-    );
-
-    // Update results when entry changes and adjust window height
-    let state_clone = state.clone();
-    let list_box_clone = list_box.clone();
-    let emoji_grid_clone = emoji_grid.clone();
-    let results_container_clone = results_container.clone();
-    let scrolled_clone = scrolled.clone();
-    let window_clone = window.clone();
-    let row_height_clone = row_height;
-    let entry_height_clone = entry_height;
-    let window_width_clone = window_width;
-    let max_results_clone = max_results;
-    entry.connect_changed(move |entry| {
-        let query = entry.text();
-        let mut state = state_clone.lock().unwrap();
-        state.update_query(&query);
-        
-        // Check if emoji mode
-        let is_emoji_mode = matches!(state.current_mode, Mode::Emoji);
-        let limit = if is_emoji_mode { 
-            // Always show exactly 24 emojis (3 rows of 8)
-            24
-        } else { 
-            max_results_clone 
+        let placeholder = match config_error {
+            Some(_) => "Config file has errors, using defaults (details on stderr)",
+            None => "Search apps, files, emoji, calculate, or ask something?",
         };
-        
-        // Limit results to max_results (5) and store in displayed_results
-        // Build displayed_results in one step to avoid borrowing issues
-        let displayed: Vec<_> = state.results.iter().take(limit).cloned().collect();
-        state.displayed_results = displayed.clone();
-        state.selected_index = 0; // Reset selection when query changes
-        let selected_idx = state.selected_index;
-        update_results_list(&list_box_clone, &emoji_grid_clone, &results_container_clone, &displayed, is_emoji_mode, &window_clone, selected_idx);
-        
-        // Clear selection when results change
-        list_box_clone.unselect_all();
-        
-        // Calculate height based on number of results
-        let num_results = state.displayed_results.len();
-        if num_results > 0 {
-            // Show results and adjust height
-            scrolled_clone.set_visible(true);
-            let total_height = if is_emoji_mode {
-                // For emoji grid, calculate height based on grid rows (assuming 8 columns)
-                let rows = (num_results + 7) / 8; // Round up division
-                entry_height_clone + (rows as i32 * 50) + 40
-            } else {
-                entry_height_clone + (num_results as i32 * row_height_clone) + 20
-            };
-            window_clone.set_default_size(window_width_clone, total_height);
-            window_clone.set_size_request(window_width_clone, total_height);
-        } else {
-            // Hide results, just show search bar
-            scrolled_clone.set_visible(false);
-            window_clone.set_default_size(window_width_clone, entry_height_clone);
-            window_clone.set_size_request(window_width_clone, entry_height_clone);
-        }
-    });
+        let entry = Entry::builder()
+            .placeholder_text(placeholder)
+            .primary_icon_name("system-search-symbolic")
+            .build();
+        entry.set_icon_activatable(gtk::EntryIconPosition::Primary, false);
 
-    // Handle Enter key - execute selected item
-    let state_clone = state.clone();
-    let window_clone = window.clone();
-    let list_box_clone = list_box.clone();
-    let emoji_grid_clone = emoji_grid.clone();
-    let results_container_clone = results_container.clone();
-    let config_clone = config_arc.clone();
-    let app_for_settings = app_clone.clone();
-    entry.connect_activate(move |_entry| {
-        let state = state_clone.lock().unwrap();
-        if !state.displayed_results.is_empty() {
-            // Check if emoji mode
-            let is_emoji_mode = matches!(state.current_mode, Mode::Emoji);
-            let selected_index = if is_emoji_mode {
-                state.selected_index
+        let list_box = ListBox::new();
+        list_box.set_selection_mode(gtk::SelectionMode::Single);
+
+        let emoji_grid = Grid::new();
+        emoji_grid.set_row_spacing(EMOJI_SPACING as u32);
+        emoji_grid.set_column_spacing(EMOJI_SPACING as u32);
+        emoji_grid.set_column_homogeneous(true);
+        emoji_grid.set_margin_start(EMOJI_MARGIN);
+        emoji_grid.set_margin_end(EMOJI_MARGIN);
+        emoji_grid.set_margin_top(EMOJI_MARGIN);
+        emoji_grid.set_margin_bottom(EMOJI_MARGIN);
+        emoji_grid.set_visible(false);
+
+        let results_container = GtkBox::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .build();
+        results_container.append(&list_box);
+        results_container.append(&emoji_grid);
+
+        // Grows with its content up to a maximum set in `render`, then scrolls.
+        let scrolled = ScrolledWindow::builder()
+            .child(&results_container)
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .vscrollbar_policy(gtk::PolicyType::Automatic)
+            .propagate_natural_height(true)
+            .build();
+        scrolled.set_visible(false);
+
+        main_box.append(&entry);
+        main_box.append(&scrolled);
+        window.set_child(Some(&main_box));
+
+        let state = LauncherState::new(&config.borrow());
+        let launcher = Rc::new(Self {
+            app: app.clone(),
+            window,
+            entry,
+            list_box,
+            emoji_grid,
+            results_container,
+            scrolled,
+            config,
+            state: RefCell::new(state),
+            emoji_buttons: RefCell::new(Vec::new()),
+            emoji_selected: Cell::new(0),
+            history_position: Cell::new(None),
+            recalling: Cell::new(false),
+            dismissing: Cell::new(false),
+            claude_request: RefCell::new(None),
+            claude_generation: Cell::new(0),
+        });
+        launcher.connect_signals();
+        launcher
+    }
+
+    fn connect_signals(self: &Rc<Self>) {
+        let this = self.clone();
+        self.entry.connect_changed(move |_| {
+            if !this.recalling.get() {
+                this.history_position.set(None);
+            }
+            this.refresh();
+        });
+
+        let this = self.clone();
+        self.entry.connect_activate(move |_| {
+            if let Some(index) = this.selected_index() {
+                this.activate_index(index, false);
+            }
+        });
+
+        // Capture phase, so navigation keys are seen before the entry uses them.
+        let keys = EventControllerKey::new();
+        keys.set_propagation_phase(gtk::PropagationPhase::Capture);
+        let this = self.clone();
+        keys.connect_key_pressed(move |_, key, _, modifiers| this.on_key(key, modifiers));
+        self.entry.add_controller(keys);
+
+        let this = self.clone();
+        self.list_box.connect_row_activated(move |_, row| {
+            if let Ok(index) = usize::try_from(row.index()) {
+                this.activate_index(index, false);
+            }
+        });
+
+        let this = self.clone();
+        self.window.connect_is_active_notify(move |window| {
+            let enabled = this.config.borrow().behavior.close_on_focus_loss;
+            if enabled && !window.is_active() && window.is_visible() {
+                this.dismiss();
+            }
+        });
+
+        // Alt+F4 and friends go through the same path as Escape.
+        let this = self.clone();
+        self.window.connect_close_request(move |_| {
+            if this.config.borrow().behavior.stay_resident {
+                this.dismiss();
+                glib::Propagation::Stop
             } else {
-                // Get selected row or use first item
-                if let Some(selected_row) = list_box_clone.selected_row() {
-                    selected_row.index() as usize
-                } else {
-                    0
-                }
-            };
-            
-            // Check if settings
-            if let Some(ResultItem::Settings) = state.displayed_results.get(selected_index) {
-                SettingsWindow::open(&app_for_settings, config_clone.clone());
-                window_clone.close();
-            } else if let Err(e) = state.execute_selected(selected_index) {
-                eprintln!("Error executing: {}", e);
-            } else {
-                window_clone.close();
+                LAUNCHER.with(|slot| slot.borrow_mut().take());
+                glib::Propagation::Proceed
+            }
+        });
+    }
+
+    // ---------- showing and hiding ----------
+
+    fn show(self: &Rc<Self>) {
+        let width = self.config.borrow().theme.width;
+
+        self.cancel_ask();
+        self.state.borrow_mut().reset_session();
+        self.history_position.set(None);
+        if self.entry.text().is_empty() {
+            self.refresh();
+        } else {
+            // Emits `changed`, which refreshes.
+            self.entry.set_text("");
+        }
+
+        self.window.set_default_size(width, INITIAL_HEIGHT);
+        self.window.set_size_request(width, -1);
+        self.window.set_opacity(0.0);
+        self.window.present();
+        self.entry.grab_focus();
+        self.fade_in();
+
+        // Read the application list after the first frame. GIO keeps it
+        // cached and up to date, so this is cheap on later shows.
+        let this = self.clone();
+        glib::timeout_add_local_once(Duration::from_millis(30), move || {
+            this.state.borrow_mut().apps = AppLauncher::load();
+            if this.window.is_visible() {
+                this.refresh();
+            }
+        });
+    }
+
+    fn fade_in(&self) {
+        let window = self.window.clone();
+        let mut opacity = 0.0;
+        glib::timeout_add_local(Duration::from_millis(10), move || {
+            opacity += 0.05;
+            if opacity >= 1.0 || !window.is_visible() {
+                window.set_opacity(1.0);
+                return glib::ControlFlow::Break;
+            }
+            window.set_opacity(opacity);
+            glib::ControlFlow::Continue
+        });
+    }
+
+    /// Hide the launcher. In resident mode the process and window survive for
+    /// the next invocation; otherwise the window closes and, once no other
+    /// window (settings) is open, the application exits.
+    fn dismiss(&self) {
+        if self.dismissing.replace(true) {
+            return;
+        }
+        // Nobody is left to read the answer.
+        self.cancel_ask();
+        if self.config.borrow().behavior.stay_resident {
+            self.window.set_visible(false);
+        } else {
+            LAUNCHER.with(|slot| slot.borrow_mut().take());
+            self.window.destroy();
+        }
+        self.dismissing.set(false);
+    }
+
+    // ---------- results ----------
+
+    fn refresh(self: &Rc<Self>) {
+        self.refresh_with(false);
+    }
+
+    fn refresh_with(self: &Rc<Self>, keep_scroll: bool) {
+        let query = self.entry.text();
+        let config = self.config.borrow().clone();
+
+        // Editing the question abandons the request for the old one.
+        let abandoned = self
+            .state
+            .borrow()
+            .ask
+            .as_ref()
+            .is_some_and(|ask| ask.question != query.trim());
+        if abandoned {
+            self.cancel_ask();
+            self.state.borrow_mut().ask = None;
+        }
+
+        let needs = self.state.borrow_mut().update(&query, &config);
+        if needs.windows {
+            self.load_windows();
+        }
+        if needs.files {
+            self.load_file_index(&config);
+        }
+        self.render(keep_scroll);
+    }
+
+    // ---------- Claude ----------
+
+    fn cancel_ask(&self) {
+        self.claude_generation.set(self.claude_generation.get() + 1);
+        // Dropping the request kills the CLI process.
+        self.claude_request.borrow_mut().take();
+    }
+
+    /// Send the question through the Claude Code CLI and stream the answer
+    /// into the list. Only ever called on Enter, never while typing.
+    fn start_ask(self: &Rc<Self>, question: String, model: String) {
+        self.cancel_ask();
+        let config = self.config.borrow().claude.clone();
+
+        let mut ask = Ask {
+            question: question.clone(),
+            model,
+            text: String::new(),
+            status: AskStatus::Thinking,
+        };
+        match claude::start(&config, &question) {
+            Ok(request) => *self.claude_request.borrow_mut() = Some(request),
+            Err(error) => {
+                ask.status = AskStatus::Failed;
+                ask.text = error;
             }
         }
-    });
+        {
+            let mut state = self.state.borrow_mut();
+            state.history.push(&question);
+            state.ask = Some(ask);
+        }
+        self.refresh();
 
-    // Handle keyboard navigation (Escape, Arrow keys) on the entry
-    let entry_key_controller = EventControllerKey::new();
-    // Set to capture phase to intercept keys before entry processes them
-    entry_key_controller.set_propagation_phase(gtk::PropagationPhase::Capture);
-    let window_clone = window.clone();
-    let list_box_clone = list_box.clone();
-    let emoji_grid_clone = emoji_grid.clone();
-    let results_container_clone = results_container.clone();
-    let state_clone = state.clone();
-    entry_key_controller.connect_key_pressed(move |_, keyval, _, _| {
-        match keyval {
+        let generation = self.claude_generation.get();
+        let this = self.clone();
+        glib::timeout_add_local(ANSWER_POLL_INTERVAL, move || {
+            if this.claude_generation.get() != generation {
+                return glib::ControlFlow::Break;
+            }
+            let events = match this.claude_request.borrow().as_ref() {
+                Some(request) => request.poll(),
+                None => return glib::ControlFlow::Break,
+            };
+            if events.is_empty() {
+                return glib::ControlFlow::Continue;
+            }
+
+            let mut finished = false;
+            {
+                let mut state = this.state.borrow_mut();
+                let Some(ask) = state.ask.as_mut() else {
+                    return glib::ControlFlow::Break;
+                };
+                for event in events {
+                    match event {
+                        claude::Event::Delta(text) => {
+                            ask.text.push_str(&text);
+                            ask.status = AskStatus::Answering;
+                        }
+                        claude::Event::Done(text) => {
+                            if !text.is_empty() {
+                                ask.text = text;
+                            }
+                            ask.status = AskStatus::Done;
+                            finished = true;
+                        }
+                        claude::Event::Failed(error) => {
+                            ask.text = error;
+                            ask.status = AskStatus::Failed;
+                            finished = true;
+                        }
+                    }
+                }
+            }
+            if finished {
+                this.claude_request.borrow_mut().take();
+            }
+            // Keep the reader's place while more text streams in.
+            this.refresh_with(true);
+            if finished {
+                glib::ControlFlow::Break
+            } else {
+                glib::ControlFlow::Continue
+            }
+        });
+    }
+
+    /// List windows on a worker thread; several helper processes may run.
+    fn load_windows(self: &Rc<Self>) {
+        let this = self.clone();
+        glib::spawn_future_local(async move {
+            let result = gio::spawn_blocking(window_switcher::list_windows).await;
+            this.state.borrow_mut().windows = match result {
+                Ok(Ok(windows)) => WindowList::Loaded(windows),
+                Ok(Err(error)) => WindowList::Failed(error),
+                Err(_) => WindowList::Failed("Listing windows failed".to_string()),
+            };
+            if this.window.is_visible() {
+                this.refresh();
+            }
+        });
+    }
+
+    /// Walk the configured directories on a worker thread.
+    fn load_file_index(self: &Rc<Self>, config: &Config) {
+        let this = self.clone();
+        let files_config = config.files.clone();
+        glib::spawn_future_local(async move {
+            let entries = gio::spawn_blocking(move || files::build_index(&files_config))
+                .await
+                .unwrap_or_default();
+            this.state.borrow_mut().set_file_index(entries);
+            if this.window.is_visible() {
+                this.refresh();
+            }
+        });
+    }
+
+    fn render(self: &Rc<Self>, keep_scroll: bool) {
+        let (results, emoji_mode, answer_mode) = {
+            let state = self.state.borrow();
+            (state.results.clone(), state.emoji_mode, state.answer_mode())
+        };
+        let scroll_position = self.scrolled.vadjustment().value();
+        let (width, max_rows) = {
+            let config = self.config.borrow();
+            (config.theme.width, config.behavior.max_results)
+        };
+
+        while let Some(row) = self.list_box.row_at_index(0) {
+            self.list_box.remove(&row);
+        }
+        while let Some(child) = self.emoji_grid.first_child() {
+            self.emoji_grid.remove(&child);
+        }
+        self.emoji_buttons.borrow_mut().clear();
+        self.emoji_selected.set(0);
+
+        self.list_box.set_visible(!emoji_mode);
+        self.emoji_grid.set_visible(emoji_mode);
+
+        // Height of the part that is visible without scrolling. Measured for
+        // the real width, so wrapped text reports its wrapped height.
+        let natural_height =
+            |widget: &gtk::Widget| widget.measure(gtk::Orientation::Vertical, width).1;
+        let mut visible_height = 0;
+
+        if emoji_mode {
+            let mut buttons = Vec::with_capacity(results.len());
+            for (index, item) in results.iter().enumerate() {
+                let ResultItem::Emoji(emoji) = item else {
+                    continue;
+                };
+                let button = rows::emoji_button(emoji);
+                let this = self.clone();
+                button.connect_clicked(move |_| this.activate_index(index, false));
+                self.emoji_grid.attach(
+                    &button,
+                    (index % EMOJI_COLUMNS) as i32,
+                    (index / EMOJI_COLUMNS) as i32,
+                    1,
+                    1,
+                );
+                buttons.push(button);
+            }
+            if let Some(first) = buttons.first() {
+                let rows = results
+                    .len()
+                    .div_ceil(EMOJI_COLUMNS)
+                    .min(EMOJI_VISIBLE_ROWS) as i32;
+                visible_height = rows * natural_height(first.upcast_ref())
+                    + (rows - 1) * EMOJI_SPACING
+                    + 2 * EMOJI_MARGIN;
+            }
+            *self.emoji_buttons.borrow_mut() = buttons;
+            self.update_emoji_selection();
+        } else {
+            for (index, item) in results.iter().enumerate() {
+                let row = rows::list_row(item);
+                self.list_box.append(&row);
+                if index < max_rows {
+                    visible_height += natural_height(row.upcast_ref());
+                }
+            }
+            // Highlight what Enter will run.
+            match self.list_box.row_at_index(0) {
+                Some(first) if first.is_selectable() => self.list_box.select_row(Some(&first)),
+                _ => self.list_box.unselect_all(),
+            }
+        }
+
+        if answer_mode {
+            visible_height = visible_height.min(ANSWER_MAX_HEIGHT);
+        }
+        self.scrolled.set_visible(!results.is_empty());
+        self.scrolled.set_max_content_height(visible_height.max(1));
+        self.scrolled
+            .vadjustment()
+            .set_value(if keep_scroll { scroll_position } else { 0.0 });
+
+        // A non-resizable window takes exactly the size we ask for, so ask
+        // for what the content needs now that the scroll area is capped.
+        let height = self
+            .window
+            .child()
+            .map(|content| content.measure(gtk::Orientation::Vertical, width).1)
+            .unwrap_or(ENTRY_HEIGHT + visible_height);
+        self.window.set_default_size(width, height);
+        self.window.set_size_request(width, height);
+    }
+
+    fn update_emoji_selection(&self) {
+        let selected = self.emoji_selected.get();
+        for (index, button) in self.emoji_buttons.borrow().iter().enumerate() {
+            if index == selected {
+                button.add_css_class("selected");
+            } else {
+                button.remove_css_class("selected");
+            }
+        }
+    }
+
+    /// Scroll just far enough that `widget` is fully visible.
+    fn scroll_into_view(&self, widget: &impl IsA<gtk::Widget>) {
+        let Some(bounds) = widget.compute_bounds(&self.results_container) else {
+            return;
+        };
+        let adjustment = self.scrolled.vadjustment();
+        let top = f64::from(bounds.y());
+        let bottom = top + f64::from(bounds.height());
+        if top < adjustment.value() {
+            adjustment.set_value(top);
+        } else if bottom > adjustment.value() + adjustment.page_size() {
+            adjustment.set_value(bottom - adjustment.page_size());
+        }
+    }
+
+    /// Index Enter acts on: the highlighted item, or the first one.
+    fn selected_index(&self) -> Option<usize> {
+        let state = self.state.borrow();
+        if state.results.is_empty() {
+            return None;
+        }
+        if state.emoji_mode {
+            return Some(self.emoji_selected.get().min(state.results.len() - 1));
+        }
+        let index = self
+            .list_box
+            .selected_row()
+            .and_then(|row| usize::try_from(row.index()).ok())
+            .unwrap_or(0);
+        Some(index)
+    }
+
+    fn selected_item(&self) -> Option<ResultItem> {
+        let index = self.selected_index()?;
+        self.state.borrow().results.get(index).cloned()
+    }
+
+    // ---------- keyboard ----------
+
+    fn on_key(self: &Rc<Self>, key: gdk::Key, modifiers: gdk::ModifierType) -> glib::Propagation {
+        let (count, emoji_mode) = {
+            let state = self.state.borrow();
+            (state.results.len(), state.emoji_mode)
+        };
+        let alt = modifiers.contains(gdk::ModifierType::ALT_MASK);
+        let ctrl = modifiers.contains(gdk::ModifierType::CONTROL_MASK);
+
+        // A long answer is read by scrolling; there is nothing to select.
+        if !alt && self.state.borrow().answer_mode() {
+            let adjustment = self.scrolled.vadjustment();
+            let step = match key {
+                gdk::Key::Down | gdk::Key::KP_Down => Some(ANSWER_SCROLL_STEP),
+                gdk::Key::Up | gdk::Key::KP_Up => Some(-ANSWER_SCROLL_STEP),
+                gdk::Key::Page_Down => Some(adjustment.page_size()),
+                gdk::Key::Page_Up => Some(-adjustment.page_size()),
+                _ => None,
+            };
+            if let Some(step) = step {
+                let max = (adjustment.upper() - adjustment.page_size()).max(0.0);
+                adjustment.set_value((adjustment.value() + step).clamp(0.0, max));
+                return glib::Propagation::Stop;
+            }
+        }
+
+        match key {
             gdk::Key::Escape => {
-                // Close window
-                window_clone.close();
+                self.dismiss();
+                glib::Propagation::Stop
+            }
+            gdk::Key::Up | gdk::Key::KP_Up if alt => {
+                self.recall_history(1);
+                glib::Propagation::Stop
+            }
+            gdk::Key::Down | gdk::Key::KP_Down if alt => {
+                self.recall_history(-1);
+                glib::Propagation::Stop
+            }
+            gdk::Key::Return | gdk::Key::KP_Enter if ctrl => {
+                if let Some(index) = self.selected_index() {
+                    self.activate_index(index, true);
+                }
+                glib::Propagation::Stop
+            }
+            gdk::Key::Tab => {
+                if !self.complete_path() {
+                    self.move_selection(count, emoji_mode, 1);
+                }
+                glib::Propagation::Stop
+            }
+            gdk::Key::ISO_Left_Tab => {
+                self.move_selection(count, emoji_mode, -1);
                 glib::Propagation::Stop
             }
             gdk::Key::Down | gdk::Key::KP_Down => {
-                let mut state = state_clone.lock().unwrap();
-                let is_emoji_mode = matches!(state.current_mode, Mode::Emoji);
-                if !state.displayed_results.is_empty() {
-                    if is_emoji_mode {
-                        // Grid navigation: move down (8 columns)
-                        let columns = 8;
-                        let max_index = state.displayed_results.len().saturating_sub(1);
-                        let new_index = (state.selected_index + columns).min(max_index);
-                        state.selected_index = new_index;
-                        // Update UI
-                        let displayed: Vec<_> = state.displayed_results.clone();
-                        let selected_idx = state.selected_index;
-                        drop(state);
-                        update_results_list(&list_box_clone, &emoji_grid_clone, &results_container_clone, &displayed, is_emoji_mode, &window_clone, selected_idx);
-                    } else {
-                        // List navigation
-                        if let Some(selected_row) = list_box_clone.selected_row() {
-                            let current_index = selected_row.index() as usize;
-                            let next_index = (current_index + 1).min(state.displayed_results.len() - 1);
-                            if let Some(next_row) = list_box_clone.row_at_index(next_index as i32) {
-                                list_box_clone.select_row(Some(&next_row));
-                            }
-                        } else {
-                            // Select first row if none selected
-                            if let Some(first_row) = list_box_clone.row_at_index(0) {
-                                list_box_clone.select_row(Some(&first_row));
-                            }
-                        }
-                    }
+                if emoji_mode {
+                    self.move_emoji(count, |i, last| (i + EMOJI_COLUMNS).min(last));
+                } else {
+                    self.move_list(count, 1);
                 }
                 glib::Propagation::Stop
             }
             gdk::Key::Up | gdk::Key::KP_Up => {
-                let mut state = state_clone.lock().unwrap();
-                let is_emoji_mode = matches!(state.current_mode, Mode::Emoji);
-                if !state.displayed_results.is_empty() {
-                    if is_emoji_mode {
-                        // Grid navigation: move up (8 columns)
-                        let columns = 8;
-                        let new_index = state.selected_index.saturating_sub(columns);
-                        state.selected_index = new_index;
-                        // Update UI
-                        let displayed: Vec<_> = state.displayed_results.clone();
-                        let selected_idx = state.selected_index;
-                        drop(state);
-                        update_results_list(&list_box_clone, &emoji_grid_clone, &results_container_clone, &displayed, is_emoji_mode, &window_clone, selected_idx);
-                    } else {
-                        // List navigation
-                        if let Some(selected_row) = list_box_clone.selected_row() {
-                            let current_index = selected_row.index() as usize;
-                            if current_index > 0 {
-                                let prev_index = current_index - 1;
-                                if let Some(prev_row) = list_box_clone.row_at_index(prev_index as i32) {
-                                    list_box_clone.select_row(Some(&prev_row));
-                                }
-                            }
-                        } else {
-                            // Select last row if none selected
-                            let last_index = state.displayed_results.len().saturating_sub(1);
-                            if let Some(last_row) = list_box_clone.row_at_index(last_index as i32) {
-                                list_box_clone.select_row(Some(&last_row));
-                            }
-                        }
-                    }
+                if emoji_mode {
+                    self.move_emoji(count, |i, _| if i >= EMOJI_COLUMNS { i - EMOJI_COLUMNS } else { i });
+                } else {
+                    self.move_list(count, -1);
                 }
                 glib::Propagation::Stop
             }
-            gdk::Key::Right | gdk::Key::KP_Right => {
-                let mut state = state_clone.lock().unwrap();
-                let is_emoji_mode = matches!(state.current_mode, Mode::Emoji);
-                if is_emoji_mode && !state.displayed_results.is_empty() {
-                    // Grid navigation: move right (wrap to next row if at end of row)
-                    let columns = 8;
-                    let max_index = state.displayed_results.len().saturating_sub(1);
-                    let current_row = state.selected_index / columns;
-                    let current_col = state.selected_index % columns;
-                    
-                    // If at end of row, wrap to start of next row (if exists)
-                    let new_index = if current_col == columns - 1 {
-                        // At end of row, try to go to start of next row
-                        let next_row_start = (current_row + 1) * columns;
-                        if next_row_start <= max_index {
-                            next_row_start
-                        } else {
-                            // No next row, stay at current position
-                            state.selected_index
-                        }
-                    } else {
-                        // Not at end of row, just move right
-                        (state.selected_index + 1).min(max_index)
-                    };
-                    
-                    state.selected_index = new_index;
-                    // Update UI
-                    let displayed: Vec<_> = state.displayed_results.clone();
-                    let selected_idx = state.selected_index;
-                    drop(state);
-                    update_results_list(&list_box_clone, &emoji_grid_clone, &results_container_clone, &displayed, is_emoji_mode, &window_clone, selected_idx);
-                    glib::Propagation::Stop
-                } else {
-                    glib::Propagation::Proceed
-                }
+            gdk::Key::Page_Down | gdk::Key::Page_Up if !emoji_mode => {
+                let page = self.config.borrow().behavior.max_results as i32;
+                self.move_list(count, if key == gdk::Key::Page_Down { page } else { -page });
+                glib::Propagation::Stop
             }
-            gdk::Key::Left | gdk::Key::KP_Left => {
-                let mut state = state_clone.lock().unwrap();
-                let is_emoji_mode = matches!(state.current_mode, Mode::Emoji);
-                if is_emoji_mode && !state.displayed_results.is_empty() {
-                    // Grid navigation: move left (wrap to previous row if at start of row)
-                    let columns = 8;
-                    let current_row = state.selected_index / columns;
-                    let current_col = state.selected_index % columns;
-                    
-                    // If at start of row, wrap to end of previous row (if exists)
-                    let new_index = if current_col == 0 {
-                        // At start of row, try to go to end of previous row
-                        if current_row > 0 {
-                            let prev_row_end = (current_row * columns) - 1;
-                            prev_row_end.min(state.displayed_results.len().saturating_sub(1))
-                        } else {
-                            // No previous row, stay at current position
-                            state.selected_index
-                        }
-                    } else {
-                        // Not at start of row, just move left
-                        state.selected_index.saturating_sub(1)
-                    };
-                    
-                    state.selected_index = new_index;
-                    // Update UI
-                    let displayed: Vec<_> = state.displayed_results.clone();
-                    let selected_idx = state.selected_index;
-                    drop(state);
-                    update_results_list(&list_box_clone, &emoji_grid_clone, &results_container_clone, &displayed, is_emoji_mode, &window_clone, selected_idx);
-                    glib::Propagation::Stop
-                } else {
-                    glib::Propagation::Proceed
-                }
+            gdk::Key::Right | gdk::Key::KP_Right if emoji_mode && count > 0 => {
+                self.move_emoji(count, |i, last| (i + 1).min(last));
+                glib::Propagation::Stop
+            }
+            gdk::Key::Left | gdk::Key::KP_Left if emoji_mode && count > 0 => {
+                self.move_emoji(count, |i, _| i.saturating_sub(1));
+                glib::Propagation::Stop
             }
             _ => glib::Propagation::Proceed,
         }
-    });
-    entry.add_controller(entry_key_controller);
-
-    // Handle list box row activation
-    let state_clone = state.clone();
-    let window_clone = window.clone();
-    list_box.connect_row_activated(move |_, row| {
-        let index = row.index();
-        let state = state_clone.lock().unwrap();
-        if let Err(e) = state.execute_selected(index as usize) {
-            eprintln!("Error executing: {}", e);
-        }
-        window_clone.close();
-    });
-
-    // Initial state - compact, no results
-    {
-        let mut state = state.lock().unwrap();
-        state.update_query("");
-        // Don't populate results initially
     }
 
-    // Assemble UI
-    main_box.append(&entry);
-    main_box.append(&scrolled);
-    window.set_child(Some(&main_box));
-
-    // Show window with fade-in animation
-    window.set_opacity(0.0);
-    window.present();
-    entry.grab_focus();
-    
-    // Animate window fade-in
-    let window_clone = window.clone();
-    let mut opacity = 0.0;
-    let step = 0.05;
-    glib::timeout_add_local(std::time::Duration::from_millis(10), move || {
-        opacity += step;
-        if opacity >= 1.0 {
-            window_clone.set_opacity(1.0);
-            return glib::ControlFlow::Break;
-        }
-        window_clone.set_opacity(opacity);
-        glib::ControlFlow::Continue
-    });
-
-    // Load apps in background thread after window appears (lazy loading)
-    let state_clone = state.clone();
-    thread::spawn(move || {
-        // Load apps in background
-        if let Ok(app_launcher) = AppLauncher::new() {
-            // Update UI from background thread using glib MainContext
-            glib::MainContext::default().invoke(move || {
-                let mut state = state_clone.lock().unwrap();
-                state.set_app_launcher(app_launcher);
-                // Apps are now loaded - next search will use them
+    fn move_selection(&self, count: usize, emoji_mode: bool, delta: i32) {
+        if emoji_mode {
+            self.move_emoji(count, |i, last| {
+                if delta > 0 {
+                    (i + 1).min(last)
+                } else {
+                    i.saturating_sub(1)
+                }
             });
+        } else {
+            self.move_list(count, delta);
         }
-    });
-}
-
-fn update_results_list(list_box: &ListBox, emoji_grid: &Grid, results_container: &GtkBox, results: &[ResultItem], is_emoji_mode: bool, window: &Window, selected_index: usize) {
-    // Clear existing content
-    while let Some(child) = results_container.first_child() {
-        results_container.remove(&child);
     }
-    
-    // Remove all children from grid
-    while let Some(child) = emoji_grid.first_child() {
-        emoji_grid.remove(&child);
+
+    fn move_emoji(&self, count: usize, step: impl Fn(usize, usize) -> usize) {
+        if count == 0 {
+            return;
+        }
+        let last = count - 1;
+        let current = self.emoji_selected.get().min(last);
+        let next = step(current, last);
+        self.emoji_selected.set(next);
+        self.update_emoji_selection();
+        if let Some(button) = self.emoji_buttons.borrow().get(next) {
+            self.scroll_into_view(button);
+        }
     }
-    
-    if is_emoji_mode {
-        // Display emojis in a grid
-        let columns = 8;
-        let mut row = 0;
-        let mut col = 0;
-        let mut emoji_count = 0;
-        
-        for (index, result) in results.iter().enumerate() {
-            if let ResultItem::Emoji(emoji) = result {
-                // Create button with emoji
-                let button = Button::builder()
-                    .label(&emoji.emoji)
-                    .has_frame(false)
-                    .build();
-                button.add_css_class("emoji-button");
-                
-                // Apply selected state if this is the selected index
-                if index == selected_index {
-                    button.add_css_class("selected");
-                }
-                
-                button.set_hexpand(true);
-                button.set_vexpand(true);
-                
-                // Connect click handler
-                let emoji_emoji = emoji.emoji.clone();
-                let window_clone = window.clone();
-                button.connect_clicked(move |_| {
-                    let _ = crate::emoji_picker::EmojiPicker::insert_emoji(&emoji_emoji);
-                    window_clone.close();
-                });
-                
-                emoji_grid.attach(&button, col, row, 1, 1);
-                
-                emoji_count += 1;
-                col += 1;
-                if col >= columns {
-                    col = 0;
-                    row += 1;
-                }
-            }
-        }
-        
-        // Fill remaining cells in the last row with empty placeholders to ensure full row
-        // After the loop, 'row' is the current row and 'col' is the current column
-        // If col > 0, it means the last row is not full, so we need to fill it
-        if col > 0 && col < columns {
-            for c in col..columns {
-                // Create a placeholder that takes up space but appears empty
-                // Use a space character so it has size, and make it non-interactive
-                let placeholder = Button::builder()
-                    .label(" ")  // Space character to ensure it takes up space
-                    .has_frame(false)
-                    .build();
-                placeholder.add_css_class("emoji-button");
-                placeholder.add_css_class("emoji-placeholder");
-                placeholder.set_hexpand(true);
-                placeholder.set_vexpand(true);
-                placeholder.set_sensitive(false); // Make it non-interactive
-                emoji_grid.attach(&placeholder, c as i32, row as i32, 1, 1);
-            }
-        }
-        
-        results_container.append(emoji_grid);
-    } else {
-        // Clear existing rows from list_box
-        while let Some(row) = list_box.row_at_index(0) {
-            list_box.remove(&row);
-        }
-        
-        // Display regular results in list
-        for result in results.iter() {
-            let row = ListBoxRow::new();
-            let row_box = GtkBox::builder()
-                .orientation(gtk::Orientation::Horizontal)
-                .spacing(12)
-                .margin_start(12)
-                .margin_end(12)
-                .margin_top(8)
-                .margin_bottom(8)
-                .build();
 
-            match result {
-                ResultItem::App(app) => {
-                    // Create icon
-                    let icon_widget = if let Some(icon_name) = &app.icon {
-                        let image = Image::from_icon_name(icon_name);
-                        image.set_pixel_size(40);
-                        image.set_css_classes(&["app-icon"]);
-                        image
-                    } else {
-                        // Fallback: use a default icon or empty image
-                        let image = Image::new();
-                        image.set_pixel_size(40);
-                        image
-                    };
-                    
-                    // Create vertical box for name and description
-                    let text_box = GtkBox::builder()
-                        .orientation(gtk::Orientation::Vertical)
-                        .spacing(1)
-                        .valign(gtk::Align::Center)
-                        .build();
-                    
-                    // App name
-                    let name_label = Label::new(Some(&app.name));
-                    name_label.set_xalign(0.0);
-                    name_label.add_css_class("app-name");
-                    
-                    // App description (comment)
-                    let desc_text = app.comment.as_deref().unwrap_or("");
-                    let desc_label = Label::new(Some(desc_text));
-                    desc_label.set_xalign(0.0);
-                    desc_label.add_css_class("app-description");
-                    
-                    text_box.append(&name_label);
-                    if !desc_text.is_empty() {
-                        text_box.append(&desc_label);
-                    }
-                    
-                    row_box.append(&icon_widget);
-                    row_box.append(&text_box);
-                }
-                ResultItem::CalculatorResult(result) => {
-                    let label = Label::new(Some(&format!("= {}", result)));
-                    label.set_xalign(0.0);
-                    row_box.append(&label);
-                }
-                ResultItem::Emoji(_) => {
-                    // Should not happen in non-emoji mode, but handle it
-                    let label = Label::new(Some(""));
-                    row_box.append(&label);
-                }
-                ResultItem::TerminalCommand(cmd) => {
-                    let label = Label::new(Some(&format!("▶ {}", cmd)));
-                    label.set_xalign(0.0);
-                    row_box.append(&label);
-                }
-                ResultItem::SearchQuery { engine, query } => {
-                    let label = Label::new(Some(&format!("🌐 Search {}: {}", engine, query)));
-                    label.set_xalign(0.0);
-                    row_box.append(&label);
-                }
-                ResultItem::OpenWindow(window) => {
-                    // Create icon (use a window icon or generic icon)
-                    let icon_widget = {
-                        let image = Image::from_icon_name("window");
-                        image.set_pixel_size(40);
-                        image.set_css_classes(&["app-icon"]);
-                        image
-                    };
-                    
-                    // Create vertical box for title and app name
-                    let text_box = GtkBox::builder()
-                        .orientation(gtk::Orientation::Vertical)
-                        .spacing(1)
-                        .valign(gtk::Align::Center)
-                        .build();
-                    
-                    // Window title
-                    let name_label = Label::new(Some(&window.title));
-                    name_label.set_xalign(0.0);
-                    name_label.add_css_class("app-name");
-                    
-                    // App name
-                    let desc_label = Label::new(Some(&window.app_name));
-                    desc_label.set_xalign(0.0);
-                    desc_label.add_css_class("app-description");
-                    
-                    text_box.append(&name_label);
-                    text_box.append(&desc_label);
-                    
-                    row_box.append(&icon_widget);
-                    row_box.append(&text_box);
-                }
-                ResultItem::Settings => {
-                    // Create icon
-                    let icon_widget = {
-                        let image = Image::from_icon_name("preferences-system");
-                        image.set_pixel_size(40);
-                        image.set_css_classes(&["app-icon"]);
-                        image
-                    };
-                    
-                    // Create vertical box for title and description
-                    let text_box = GtkBox::builder()
-                        .orientation(gtk::Orientation::Vertical)
-                        .spacing(1)
-                        .valign(gtk::Align::Center)
-                        .build();
-                    
-                    // Settings title
-                    let name_label = Label::new(Some("Poppi Launcher Settings"));
-                    name_label.set_xalign(0.0);
-                    name_label.add_css_class("app-name");
-                    
-                    // Description
-                    let desc_label = Label::new(Some("Customize theme, search, and calculator options"));
-                    desc_label.set_xalign(0.0);
-                    desc_label.add_css_class("app-description");
-                    
-                    text_box.append(&name_label);
-                    text_box.append(&desc_label);
-                    
-                    row_box.append(&icon_widget);
-                    row_box.append(&text_box);
-                }
-            }
-
-            row.set_child(Some(&row_box));
-            list_box.append(&row);
+    fn move_list(&self, count: usize, delta: i32) {
+        if count == 0 {
+            return;
         }
-        
-        results_container.append(list_box);
+        let last = count as i32 - 1;
+        let target = match self.list_box.selected_row() {
+            Some(row) => (row.index() + delta).clamp(0, last),
+            None if delta > 0 => 0,
+            None => last,
+        };
+        if let Some(row) = self.list_box.row_at_index(target) {
+            self.list_box.select_row(Some(&row));
+            self.scroll_into_view(&row);
+        }
+    }
+
+    /// Alt+Up steps back through past queries, Alt+Down forward again.
+    fn recall_history(&self, delta: i32) {
+        let entries: Vec<String> = self.state.borrow().history.entries().to_vec();
+        if entries.is_empty() {
+            return;
+        }
+        let next = match (self.history_position.get(), delta > 0) {
+            (None, true) => Some(0),
+            (None, false) => None,
+            (Some(position), true) => Some((position + 1).min(entries.len() - 1)),
+            (Some(0), false) => None,
+            (Some(position), false) => Some(position - 1),
+        };
+        self.history_position.set(next);
+        let text = next.map(|i| entries[i].as_str()).unwrap_or("");
+        self.set_query(text);
+    }
+
+    /// Replace the search text without ending history stepping.
+    fn set_query(&self, text: &str) {
+        self.recalling.set(true);
+        self.entry.set_text(text);
+        self.entry.set_position(-1);
+        self.recalling.set(false);
+    }
+
+    /// Tab on a file while a path is being typed completes it in the bar.
+    fn complete_path(&self) -> bool {
+        let text = self.entry.text();
+        if !(text.starts_with('/') || text.starts_with('~')) {
+            return false;
+        }
+        let Some(ResultItem::File(file)) = self.selected_item() else {
+            return false;
+        };
+        self.entry.set_text(&files::completion_text(&file));
+        self.entry.set_position(-1);
+        true
+    }
+
+    // ---------- running a result ----------
+
+    fn launch_context(&self) -> Option<gio::AppLaunchContext> {
+        // Carries the activation token so the launched app may take focus.
+        Some(WidgetExt::display(&self.window).app_launch_context().upcast())
+    }
+
+    fn open_file(&self, file: &FileEntry, reveal: bool) -> Result<(), String> {
+        // Ctrl+Enter opens the containing folder instead of the file.
+        let target = if reveal {
+            file.path.parent().unwrap_or(&file.path)
+        } else {
+            &file.path
+        };
+        let uri = gio::File::for_path(target).uri();
+        gio::AppInfo::launch_default_for_uri(&uri, self.launch_context().as_ref())
+            .map_err(|e| format!("Could not open {}: {}", target.display(), e))
+    }
+
+    /// `alternate` is Ctrl+Enter: for files, open the containing folder.
+    fn activate_index(self: &Rc<Self>, index: usize, alternate: bool) {
+        let Some(item) = self.state.borrow().results.get(index).cloned() else {
+            return;
+        };
+        let query = self.entry.text().to_string();
+        let mut remember = true;
+
+        let outcome = match item {
+            ResultItem::Info(_) => return,
+            ResultItem::Ask { question, model } => {
+                self.start_ask(question, model);
+                return;
+            }
+            ResultItem::Answer(ask) => {
+                if ask.status != AskStatus::Done {
+                    return;
+                }
+                // The question is already in history from when it was asked.
+                remember = false;
+                utils::copy_to_clipboard(&ask.text).or_else(|_| {
+                    WidgetExt::display(&self.window).clipboard().set_text(&ask.text);
+                    Ok(())
+                })
+            }
+            ResultItem::History(past) => {
+                // Bring the query back for editing or another Enter.
+                self.entry.set_text(&past);
+                self.entry.set_position(-1);
+                return;
+            }
+            ResultItem::ClearHistory => {
+                self.state.borrow_mut().history.clear();
+                self.entry.set_text("");
+                return;
+            }
+            ResultItem::Settings => {
+                remember = false;
+                // Open first so the application always has a window.
+                SettingsWindow::open(&self.app, self.config.clone());
+                Ok(())
+            }
+            ResultItem::Emoji(emoji) => {
+                self.state.borrow_mut().history.push(&query);
+                self.insert_emoji_after_dismiss(emoji.emoji);
+                return;
+            }
+            ResultItem::App(app) => {
+                // Launch counts already rank apps; no need to remember "fire".
+                remember = false;
+                let result = AppLauncher::launch(&app, self.launch_context().as_ref());
+                if result.is_ok() {
+                    self.state.borrow_mut().usage.record(&app.id);
+                }
+                result
+            }
+            ResultItem::Calc { result, .. } => utils::copy_to_clipboard(&result).or_else(|_| {
+                // No clipboard tool: GTK's clipboard works while we keep running.
+                WidgetExt::display(&self.window).clipboard().set_text(&result);
+                Ok(())
+            }),
+            ResultItem::Terminal(command) => Terminal::execute_command(&command),
+            ResultItem::Search { engine, query } => {
+                search::open(engine, &query, self.launch_context().as_ref())
+            }
+            ResultItem::Window { window, .. } => {
+                remember = false;
+                window_switcher::activate(&window)
+            }
+            ResultItem::File(file) => self.open_file(&file, alternate),
+            ResultItem::Alias { target, .. } => alias::run(&target, self.launch_context().as_ref()),
+        };
+
+        match outcome {
+            Ok(()) => {
+                if remember {
+                    self.state.borrow_mut().history.push(&query);
+                }
+                self.dismiss();
+            }
+            Err(error) => self.show_error(&error),
+        }
+    }
+
+    /// Typing tools send keystrokes to whichever window has focus, so the
+    /// launcher has to be gone before they run.
+    fn insert_emoji_after_dismiss(self: &Rc<Self>, emoji: &'static str) {
+        // Keep the application alive until the emoji has been delivered.
+        let hold = self.app.hold();
+        self.dismiss();
+        glib::timeout_add_local_once(FOCUS_RETURN_DELAY, move || {
+            if let Err(error) = EmojiPicker::insert(emoji) {
+                eprintln!("Could not insert emoji: {}", error);
+            }
+            drop(hold);
+        });
+    }
+
+    fn show_error(self: &Rc<Self>, error: &str) {
+        eprintln!("Error: {}", error);
+        {
+            let mut state = self.state.borrow_mut();
+            state.emoji_mode = false;
+            state.results = vec![ResultItem::Info(format!("Error: {}", error))];
+        }
+        self.render(false);
     }
 }

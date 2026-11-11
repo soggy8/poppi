@@ -1,51 +1,44 @@
+use crate::utils;
 use std::process::Command;
 
 pub struct Terminal;
 
 impl Terminal {
-    pub fn execute_command(command: &str) -> Result<(), Box<dyn std::error::Error>> {
-        // Get the shell
-        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
-        
-        // Create a command that waits for user input before closing
-        let full_command = format!("{}; echo ''; echo 'Press Enter to close...'; read", command);
-        
-        // Get the user's default terminal
-        let terminal = Self::get_default_terminal()?;
-        
-        // Execute based on terminal type (different terminals have different args)
-        Self::run_in_terminal(&terminal, &shell, &full_command)?;
-        
-        Ok(())
+    /// True when the first word of the query is an executable on `$PATH`.
+    /// This is a plain file lookup; nothing is executed.
+    pub fn looks_like_command(query: &str) -> bool {
+        query
+            .split_whitespace()
+            .next()
+            .map(|word| !word.contains('/') && utils::has_command(word))
+            .unwrap_or(false)
     }
-    
-    fn get_default_terminal() -> Result<String, Box<dyn std::error::Error>> {
-        // 1. Check $TERMINAL environment variable (user preference)
+
+    pub fn execute_command(command: &str) -> Result<(), String> {
+        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
+        // Keep the terminal open so the output can be read.
+        let full_command = format!("{}; echo ''; echo 'Press Enter to close...'; read", command);
+        let terminal = Self::default_terminal()?;
+        let argv = Self::terminal_args(&terminal, &shell, &full_command);
+        utils::spawn_detached(Command::new(&terminal).args(argv))
+    }
+
+    fn default_terminal() -> Result<String, String> {
+        // 1. $TERMINAL (user preference)
         if let Ok(term) = std::env::var("TERMINAL") {
-            if !term.is_empty() && Self::has_command(&term) {
+            if utils::has_command(&term) {
                 return Ok(term);
             }
         }
-        
-        // 2. Try x-terminal-emulator (Debian/Ubuntu system default)
-        if Self::has_command("x-terminal-emulator") {
-            // Get the actual terminal it points to
-            if let Ok(output) = Command::new("readlink")
-                .arg("-f")
-                .arg("/usr/bin/x-terminal-emulator")
-                .output()
-            {
-                if output.status.success() {
-                    let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
-                    if !path.is_empty() {
-                        return Ok(path);
-                    }
-                }
-            }
-            return Ok("x-terminal-emulator".to_string());
+
+        // 2. x-terminal-emulator (Debian/Ubuntu alternatives system); resolve
+        //    the symlink so we know which argument style to use.
+        if let Some(path) = utils::find_in_path("x-terminal-emulator") {
+            let resolved = std::fs::canonicalize(&path).unwrap_or(path);
+            return Ok(resolved.to_string_lossy().into_owned());
         }
-        
-        // 3. Try to get GNOME's preferred terminal via gsettings
+
+        // 3. GNOME's configured terminal
         if let Ok(output) = Command::new("gsettings")
             .args(["get", "org.gnome.desktop.default-applications.terminal", "exec"])
             .output()
@@ -55,140 +48,90 @@ impl Terminal {
                     .trim()
                     .trim_matches('\'')
                     .to_string();
-                if !term.is_empty() && Self::has_command(&term) {
+                if utils::has_command(&term) {
                     return Ok(term);
                 }
             }
         }
-        
-        // 4. Fallback: check common terminals
-        let terminals = ["gnome-terminal", "konsole", "kitty", "alacritty", "tilix", "xterm"];
-        for term in terminals {
-            if Self::has_command(term) {
-                return Ok(term.to_string());
-            }
-        }
-        
-        Err("No terminal emulator found".into())
-    }
-    
-    fn run_in_terminal(terminal: &str, shell: &str, command: &str) -> Result<(), Box<dyn std::error::Error>> {
-        // Get the terminal name (without path)
-        let term_name = terminal.rsplit('/').next().unwrap_or(terminal);
-        
-        match term_name {
-            "gnome-terminal" | "gnome-terminal-server" => {
-                Command::new(terminal)
-                    .arg("--")
-                    .arg(shell)
-                    .arg("-c")
-                    .arg(command)
-                    .spawn()?;
-            }
-            "kitty" => {
-                Command::new(terminal)
-                    .arg(shell)
-                    .arg("-c")
-                    .arg(command)
-                    .spawn()?;
-            }
-            "alacritty" | "konsole" | "xterm" | "urxvt" | "rxvt" | "terminator" | "mate-terminal" | "xfce4-terminal" | "lxterminal" => {
-                Command::new(terminal)
-                    .arg("-e")
-                    .arg(shell)
-                    .arg("-c")
-                    .arg(command)
-                    .spawn()?;
-            }
-            "tilix" | "terminology" => {
-                Command::new(terminal)
-                    .arg("-e")
-                    .arg(format!("{} -c '{}'", shell, command))
-                    .spawn()?;
-            }
-            "kgx" | "console" => {
-                // GNOME Console
-                Command::new(terminal)
-                    .arg("-e")
-                    .arg(shell)
-                    .arg("-c")
-                    .arg(command)
-                    .spawn()?;
-            }
-            "wezterm" => {
-                Command::new(terminal)
-                    .arg("start")
-                    .arg("--")
-                    .arg(shell)
-                    .arg("-c")
-                    .arg(command)
-                    .spawn()?;
-            }
-            // Default: try -e flag (most common)
-            _ => {
-                Command::new(terminal)
-                    .arg("-e")
-                    .arg(format!("{} -c '{}'", shell, command))
-                    .spawn()?;
-            }
-        }
-        
-        Ok(())
+
+        // 4. Common terminals
+        let terminals = [
+            "ptyxis",
+            "kgx",
+            "gnome-terminal",
+            "kitty",
+            "alacritty",
+            "foot",
+            "wezterm",
+            "konsole",
+            "tilix",
+            "xterm",
+        ];
+        terminals
+            .into_iter()
+            .find(|term| utils::has_command(term))
+            .map(str::to_string)
+            .ok_or_else(|| "No terminal emulator found".to_string())
     }
 
-    fn has_command(cmd: &str) -> bool {
-        Command::new("which")
-            .arg(cmd)
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false)
-    }
+    /// Arguments that make `terminal` run `shell -c command`.
+    fn terminal_args(terminal: &str, shell: &str, command: &str) -> Vec<String> {
+        let name = terminal.rsplit('/').next().unwrap_or(terminal);
+        let run = [shell.to_string(), "-c".to_string(), command.to_string()];
+        let with = |prefix: &[&str]| -> Vec<String> {
+            prefix
+                .iter()
+                .map(|s| s.to_string())
+                .chain(run.iter().cloned())
+                .collect()
+        };
 
-    pub fn is_terminal_command(query: &str) -> bool {
-        let trimmed = query.trim();
-        
-        if trimmed.is_empty() {
-            return false;
-        }
-        
-        // Check for explicit terminal prefixes
-        if trimmed.starts_with("> ") || 
-           trimmed.starts_with("$ ") || 
-           trimmed.starts_with("! ") ||
-           trimmed.starts_with("term ") ||
-           trimmed.starts_with("cmd ") {
-            return true;
-        }
-        
-        // Extract the first word (the command name)
-        let first_word = trimmed.split_whitespace().next().unwrap_or("");
-        
-        if first_word.is_empty() {
-            return false;
-        }
-        
-        // Check if it's a valid command in PATH
-        // This supports ALL terminal commands, not just hardcoded ones
-        Self::is_valid_command(first_word)
-    }
-    
-    fn is_valid_command(cmd: &str) -> bool {
-        // Check if command exists using 'command -v' (POSIX compliant, faster than 'which')
-        // This works for all commands in PATH, aliases, functions, and builtins
-        let output = Command::new("sh")
-            .arg("-c")
-            .arg(&format!("command -v {}", cmd))
-            .output();
-        
-        if let Ok(output) = output {
-            if output.status.success() {
-                let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
-                // Make sure it's not empty and is actually a command (not just whitespace)
-                return !path.is_empty() && !path.contains('\n');
+        match name {
+            "gnome-terminal" | "gnome-terminal-server" | "ptyxis" => with(&["--"]),
+            "kitty" | "foot" => with(&[]),
+            "wezterm" => with(&["start", "--"]),
+            "alacritty" | "konsole" | "xterm" | "urxvt" | "rxvt" | "terminator"
+            | "mate-terminal" | "xfce4-terminal" | "lxterminal" | "kgx" | "console" => {
+                with(&["-e"])
             }
+            // tilix, terminology and unknown terminals take one command string.
+            _ => vec![
+                "-e".to_string(),
+                format!("{} -c {}", shell, utils::shell_quote(command)),
+            ],
         }
-        
-        false
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn argument_styles() {
+        assert_eq!(
+            Terminal::terminal_args("/usr/bin/ptyxis", "/bin/zsh", "ls"),
+            vec!["--", "/bin/zsh", "-c", "ls"]
+        );
+        assert_eq!(
+            Terminal::terminal_args("kitty", "/bin/zsh", "ls"),
+            vec!["/bin/zsh", "-c", "ls"]
+        );
+        assert_eq!(
+            Terminal::terminal_args("alacritty", "/bin/bash", "ls -la"),
+            vec!["-e", "/bin/bash", "-c", "ls -la"]
+        );
+        assert_eq!(
+            Terminal::terminal_args("tilix", "/bin/bash", "echo 'hi'"),
+            vec!["-e", "/bin/bash -c 'echo '\\''hi'\\'''"]
+        );
+    }
+
+    #[test]
+    fn command_detection_is_a_path_lookup() {
+        assert!(Terminal::looks_like_command("sh -c true"));
+        assert!(!Terminal::looks_like_command(""));
+        assert!(!Terminal::looks_like_command("sh;poweroff"));
+        assert!(!Terminal::looks_like_command("definitely-not-a-command-xyz"));
+    }
+}

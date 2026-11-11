@@ -28,7 +28,7 @@ Feature suggestions are welcome! Please open an issue with:
 1. **Fork the repository**
 2. **Create a feature branch** (`git checkout -b feature/amazing-feature`)
 3. **Make your changes**
-4. **Test your changes** (`cargo build --release` and test manually)
+4. **Test your changes** (`make lint test`, then try it manually)
 5. **Commit your changes** (`git commit -m 'Add some amazing feature'`)
    - Use clear, descriptive commit messages
    - Reference issue numbers if applicable
