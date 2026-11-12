@@ -14,7 +14,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install GTK4
-        run: sudo apt-get update && sudo apt-get install -y libgtk-4-dev libgtk4-layer-shell-dev
+        run: sudo apt-get update && sudo apt-get install -y libgtk-4-dev
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
@@ -25,6 +25,16 @@ jobs:
         run: |
           cargo clippy --locked --all-targets -- -D warnings
           cargo clippy --locked --all-targets --features ui-test -- -D warnings
-          cargo clippy --locked --all-targets --features layer-shell -- -D warnings
       - name: Test
         run: cargo test --locked
+
+  # Ubuntu 24.04 has no gtk4-layer-shell package; Fedora does.
+  layer-shell:
+    runs-on: ubuntu-24.04
+    container: fedora:42
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install GTK4 and gtk4-layer-shell
+        run: dnf install -y gcc cargo gtk4-devel gtk4-layer-shell-devel
+      - name: Build with layer-shell
+        run: cargo build --locked --features layer-shell
