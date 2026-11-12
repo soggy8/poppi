@@ -9,9 +9,35 @@ enum Token {
     Num(f64),
     Ident(String),
     Op(char),
+    Of,
     LParen,
     RParen,
     Comma,
+}
+
+fn parse_radix_prefix(chars: &[char], start: usize) -> Option<(f64, usize)> {
+    if chars.get(start) != Some(&'0') {
+        return None;
+    }
+    let (radix, valid): (u32, fn(char) -> bool) = match chars.get(start + 1)? {
+        'x' | 'X' => (16, |c| c.is_ascii_hexdigit()),
+        'b' | 'B' => (2, |c| matches!(c, '0' | '1')),
+        'o' | 'O' => (8, |c| matches!(c, '0'..='7')),
+        _ => return None,
+    };
+    let mut i = start + 2;
+    let mut digits = String::new();
+    while i < chars.len() && (valid(chars[i]) || chars[i] == '_') {
+        if chars[i] != '_' {
+            digits.push(chars[i]);
+        }
+        i += 1;
+    }
+    if digits.is_empty() {
+        return None;
+    }
+    let value = u64::from_str_radix(&digits, radix).ok()? as f64;
+    Some((value, i))
 }
 
 fn tokenize(input: &str) -> Result<Vec<Token>, String> {
@@ -23,15 +49,21 @@ fn tokenize(input: &str) -> Result<Vec<Token>, String> {
         let c = chars[i];
         if c.is_whitespace() {
             i += 1;
+        } else if let Some((value, next)) = parse_radix_prefix(&chars, i) {
+            tokens.push(Token::Num(value));
+            i = next;
         } else if c.is_ascii_digit() || c == '.' {
             let start = i;
-            while i < chars.len() && (chars[i].is_ascii_digit() || chars[i] == '.') {
+            while i < chars.len()
+                && (chars[i].is_ascii_digit() || chars[i] == '.' || chars[i] == '_')
+            {
                 i += 1;
             }
-            let text: String = chars[start..i].iter().collect();
-            let value = text
+            let raw: String = chars[start..i].iter().collect();
+            let clean: String = raw.chars().filter(|&ch| ch != '_').collect();
+            let value = clean
                 .parse::<f64>()
-                .map_err(|_| format!("Invalid number: {}", text))?;
+                .map_err(|_| format!("Invalid number: {}", raw))?;
             tokens.push(Token::Num(value));
         } else if c.is_alphabetic() {
             let start = i;
@@ -47,6 +79,8 @@ fn tokenize(input: &str) -> Result<Vec<Token>, String> {
             }
             if word == "x" {
                 tokens.push(Token::Op('*'));
+            } else if word == "of" {
+                tokens.push(Token::Of);
             } else {
                 tokens.push(Token::Ident(word));
             }
@@ -91,42 +125,81 @@ impl Parser {
         token
     }
 
+    fn peek_at(&self, offset: usize) -> Option<&Token> {
+        self.tokens.get(self.pos + offset)
+    }
+
     fn expr(&mut self) -> Result<f64, String> {
-        let mut value = self.term()?;
+        let (mut value, mut lhs_percent) = self.term_with_percent()?;
         while let Some(Token::Op(op @ ('+' | '-'))) = self.peek().cloned() {
             self.pos += 1;
-            let rhs = self.term()?;
-            value = if op == '+' { value + rhs } else { value - rhs };
-        }
-        Ok(value)
-    }
-
-    fn term(&mut self) -> Result<f64, String> {
-        let mut value = self.unary()?;
-        while let Some(Token::Op(op @ ('*' | '/' | '%'))) = self.peek().cloned() {
-            self.pos += 1;
-            let rhs = self.unary()?;
-            value = match op {
-                '*' => value * rhs,
-                '/' => value / rhs,
-                _ => value % rhs,
+            let (rhs, rhs_percent) = self.term_with_percent()?;
+            value = match (op, rhs_percent && !lhs_percent) {
+                ('+', true) => value * (1.0 + rhs),
+                (_, true) => value * (1.0 - rhs),
+                ('+', false) => value + rhs,
+                (_, false) => value - rhs,
             };
+            lhs_percent = false;
         }
         Ok(value)
     }
 
-    fn unary(&mut self) -> Result<f64, String> {
+    /// Returns `(evaluated_term, was_single_trailing_percent)`.
+    fn term_with_percent(&mut self) -> Result<(f64, bool), String> {
+        let (mut value, mut single_percent) = self.unary_with_percent()?;
+        loop {
+            match self.peek().cloned() {
+                Some(Token::Op(op @ ('*' | '/' | '%'))) => {
+                    self.pos += 1;
+                    let (rhs, _) = self.unary_with_percent()?;
+                    value = match op {
+                        '*' => value * rhs,
+                        '/' => value / rhs,
+                        _ => value % rhs,
+                    };
+                    single_percent = false;
+                }
+                Some(Token::Of) => {
+                    self.pos += 1;
+                    let (rhs, _) = self.unary_with_percent()?;
+                    value *= rhs;
+                    single_percent = false;
+                }
+                _ => break,
+            }
+        }
+        Ok((value, single_percent))
+    }
+
+    fn unary_with_percent(&mut self) -> Result<(f64, bool), String> {
         match self.peek() {
             Some(Token::Op('-')) => {
                 self.pos += 1;
-                Ok(-self.unary()?)
+                let (v, pct) = self.unary_with_percent()?;
+                Ok((-v, pct))
             }
             Some(Token::Op('+')) => {
                 self.pos += 1;
-                self.unary()
+                self.unary_with_percent()
             }
-            _ => self.power(),
+            _ => self.postfix(),
         }
+    }
+
+    fn postfix(&mut self) -> Result<(f64, bool), String> {
+        let base = self.power()?;
+        // `%` is postfix percentage unless followed by a modulo right-hand operand.
+        let is_postfix_pct = self.peek() == Some(&Token::Op('%'))
+            && !matches!(
+                self.peek_at(1),
+                Some(Token::Num(_) | Token::Ident(_) | Token::LParen)
+            );
+        if is_postfix_pct {
+            self.pos += 1;
+            return Ok((base / 100.0, true));
+        }
+        Ok((base, false))
     }
 
     fn power(&mut self) -> Result<f64, String> {
@@ -134,7 +207,7 @@ impl Parser {
         if let Some(Token::Op('^')) = self.peek() {
             self.pos += 1;
             // Right associative, and binds tighter than unary minus on the left.
-            let exponent = self.unary()?;
+            let (exponent, _) = self.unary_with_percent()?;
             return Ok(base.powf(exponent));
         }
         Ok(base)
@@ -321,5 +394,22 @@ mod tests {
         assert_eq!(Calculator::format_result(1.0 / 3.0), "0.3333333333");
         assert_eq!(Calculator::format_result(-12.0), "-12");
         assert_eq!(Calculator::format_result(1e-12), "1e-12");
+    }
+
+    #[test]
+    fn percentages_and_radix_literals() {
+        assert!((eval("15% of 240") - 36.0).abs() < 1e-9);
+        assert!((eval("80 + 19%") - 95.2).abs() < 1e-9);
+        assert!((eval("100 - 20%") - 80.0).abs() < 1e-9);
+        assert!((eval("200 * 15%") - 30.0).abs() < 1e-9);
+        assert!((eval("50% + 10%") - 0.6).abs() < 1e-9);
+        // Binary modulo still works when followed by an operand.
+        assert_eq!(eval("7 % 4"), 3.0);
+        assert_eq!(eval("80 + 7 % 4"), 83.0);
+
+        assert_eq!(eval("0xff + 1"), 256.0);
+        assert_eq!(eval("0b1010 * 3"), 30.0);
+        assert_eq!(eval("0o755 - 0o700"), 45.0);
+        assert_eq!(eval("1_000_000 / 1_000"), 1000.0);
     }
 }

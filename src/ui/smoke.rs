@@ -28,7 +28,11 @@ fn kind(item: &ResultItem) -> &'static str {
         ResultItem::Search { .. } => "search",
         ResultItem::Window { .. } => "window",
         ResultItem::File(_) => "file",
+        ResultItem::ContentMatch(_) => "grep",
         ResultItem::Alias { .. } => "alias",
+        ResultItem::ScriptRun { .. } => "script",
+        ResultItem::ScriptOutput(_) => "script-item",
+        ResultItem::ItemAction { .. } => "action",
         ResultItem::History(_) => "history",
         ResultItem::ClearHistory => "clear-history",
         ResultItem::Clipboard(_) => "clipboard",
@@ -57,7 +61,10 @@ fn perform(launcher: &Rc<Launcher>, step: &str) {
     let press = |key: gdk::Key, modifiers: gdk::ModifierType| {
         launcher.on_key(key, modifiers);
     };
-    if let Some(count) = step.strip_prefix("<down:").and_then(|r| r.strip_suffix('>')) {
+    if let Some(count) = step
+        .strip_prefix("<down:")
+        .and_then(|r| r.strip_suffix('>'))
+    {
         for _ in 0..count.parse::<u32>().unwrap_or(1) {
             press(gdk::Key::Down, none);
         }
@@ -70,6 +77,13 @@ fn perform(launcher: &Rc<Launcher>, step: &str) {
         "<tab>" => press(gdk::Key::Tab, none),
         "<alt-up>" => press(gdk::Key::Up, gdk::ModifierType::ALT_MASK),
         "<backspace>" => press(gdk::Key::BackSpace, none),
+        "<escape>" => press(gdk::Key::Escape, none),
+        "<ctrl-c>" => press(gdk::Key::c, gdk::ModifierType::CONTROL_MASK),
+        "<ctrl-k>" => press(gdk::Key::k, gdk::ModifierType::CONTROL_MASK),
+        "<ctrl-shift-c>" => press(
+            gdk::Key::C,
+            gdk::ModifierType::CONTROL_MASK | gdk::ModifierType::SHIFT_MASK,
+        ),
         "<enter>" => {
             if let Some(index) = launcher.selected_index() {
                 launcher.activate_index(index, false);
@@ -94,7 +108,14 @@ fn report(launcher: &Rc<Launcher>, index: usize, step: &str, shots: Option<&str>
             state
                 .chat
                 .last()
-                .map(|turn| format!("{:?}:{}", turn.status, turn.text.chars().count()))
+                .map(|turn| {
+                    format!(
+                        "{}:{:?}:{}",
+                        turn.model,
+                        turn.status,
+                        turn.text.chars().count()
+                    )
+                })
                 .unwrap_or_else(|| "-".to_string()),
         )
     };
@@ -140,7 +161,9 @@ pub(super) fn run(launcher: &Rc<Launcher>) {
     if STARTED.with(|started| started.replace(true)) {
         return;
     }
-    let shots = std::env::var("POPPI_UI_SHOTS").ok().filter(|dir| !dir.is_empty());
+    let shots = std::env::var("POPPI_UI_SHOTS")
+        .ok()
+        .filter(|dir| !dir.is_empty());
     let interval: u64 = std::env::var("POPPI_UI_STEP_MS")
         .ok()
         .and_then(|value| value.parse().ok())

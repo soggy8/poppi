@@ -205,14 +205,13 @@ window.poppi-launcher {
     border-color: alpha({{accent}}, 0.65);
 }
 
-/* ---------- Conversation with Claude ---------- */
+/* ---------- AI conversation ---------- */
 
 .poppi-launcher row.chat-row,
 .poppi-launcher row.chat-row:selected,
 .poppi-launcher row.chat-row:hover {
     background-color: transparent;
     padding: 8px 12px 10px 12px;
-    /* Rebuilt as text streams in; a restarting fade would keep it dim. */
     animation: none;
     transition: none;
 }
@@ -223,8 +222,51 @@ window.poppi-launcher {
     font-weight: 600;
 }
 
+.poppi-launcher .chat-model {
+    color: {{accent}};
+    font-size: 8.5pt;
+    font-weight: 600;
+}
+
 .poppi-launcher .chat-answer {
     font-size: 11.5pt;
+}
+
+.poppi-launcher .chat-code {
+    background-color: alpha({{text}}, 0.06);
+    border: 1px solid alpha({{text}}, 0.1);
+    border-radius: {{radius_small}}px;
+    padding: 6px 10px 8px 10px;
+}
+
+.poppi-launcher .chat-code-lang {
+    color: alpha({{text}}, 0.45);
+    font-size: 8.5pt;
+    font-weight: 600;
+}
+
+.poppi-launcher .chat-code-body {
+    font-family: monospace;
+    font-size: 10pt;
+}
+
+.poppi-launcher button.chat-code-copy {
+    background: none;
+    background-color: transparent;
+    border: none;
+    border-radius: 4px;
+    box-shadow: none;
+    outline: none;
+    min-height: 22px;
+    min-width: 22px;
+    padding: 2px 5px;
+    color: alpha({{text}}, 0.55);
+    transition: background-color 0.1s ease;
+}
+
+.poppi-launcher button.chat-code-copy:hover {
+    background-color: alpha({{text}}, 0.1);
+    color: {{text}};
 }
 
 .poppi-launcher .chat-status {

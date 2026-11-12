@@ -19,11 +19,11 @@ Inspired by Albert launcher, built with Rust and GTK4 for optimal performance
 
 ## ✨ Features
 
-- **🎯 Applications**: Fuzzy search over installed apps (Flatpak and Snap included), with matched letters highlighted. Apps you use often and recently rank first and are listed as soon as the launcher opens. App actions such as "New Private Window" are searchable too
-- **📁 Files**: Find files by name (`f report`), recently changed ones first, or browse by typing a path (`~/Doc`, Tab to complete)
+- **🎯 Applications**: Fuzzy search over installed apps (Flatpak and Snap included), with matched letters highlighted. Apps you use often and recently rank first and are listed as soon as the launcher opens, kept live as apps are installed or removed. App actions such as "New Private Window" are searchable too
+- **📁 Files**: Find files by name (`f report`), recently changed ones first, skipping `.gitignore` noise, or browse by typing a path (`~/Doc`, Tab to complete)
 - **🪟 Window Switcher**: Switch between open windows, most recently used first, shown with their app icons (`sw`)
 - **🔢 Calculator and conversion**: `2+2`, `sqrt(16)`, `5 km in miles`, `100 f to c`, `20 usd in eur`
-- **🤖 Ask Claude**: End your text with `?` and get an answer in the launcher, then keep typing follow-ups. Runs on your Claude subscription through Claude Code; no API key
+- **🤖 Ask AI**: End your text with `?` (or start with a model name like `sonnet`, `llama`, `gemini`, `codex`) and stream an answer right inside the launcher, with follow-up turns and one-key code copying. Works with CLI subscriptions (Claude Code, Gemini CLI, Codex), local servers (Ollama, LM Studio), cloud APIs (OpenAI, Anthropic, Gemini, OpenRouter, Mistral, Groq, DeepSeek, xAI, …) and custom commands
 - **😀 Emoji Picker**: Search emojis, recents first, with your skin tone (`:` or `emoji`)
 - **📋 Clipboard history**: `clip` lists recently copied texts
 - **⏻ System actions**: `lock`, `suspend`, `log out`, `restart`, `power off`
@@ -57,8 +57,9 @@ sudo pacman -S gtk4
 |---|---|---|
 | Copy calculator results, emoji fallback | `wl-clipboard` | `xclip` or `xsel` |
 | Type emojis into the focused window | `wtype` (wlroots compositors) or `ydotool` | `xdotool` |
-| Currency conversion | `curl` | `curl` |
-| Ask Claude | [Claude Code](https://claude.com/claude-code), logged in | same |
+| Currency conversion & HTTP AI APIs | `curl` | `curl` |
+| Store AI API keys in the GNOME keyring | `libsecret` (`secret-tool`) | `libsecret` (`secret-tool`) |
+| Ask AI via CLI logins | [Claude Code](https://claude.com/claude-code), Gemini CLI, or Codex | same |
 | Window switcher | [window-calls](https://github.com/ickyicky/window-calls) GNOME extension | `wmctrl` (plus `xprop`) or `xdotool` |
 
 On GNOME Wayland no tool can type into another window, so emojis are copied to the clipboard instead; paste with Ctrl+V.
@@ -72,6 +73,14 @@ make install            # installs to ~/.local; use PREFIX=/usr/local for system
 ```
 
 This installs the binary, the desktop entry and the icon. `make uninstall` removes them. Make sure `~/.local/bin` is on your `PATH`.
+
+On Sway, Hyprland, Niri or KDE, build with layer-shell support so the launcher opens as an overlay near the top of the screen instead of being tiled like a normal window. It needs the `gtk4-layer-shell` library (`gtk4-layer-shell-devel` on Fedora, `libgtk4-layer-shell-dev` on Debian/Ubuntu, `gtk4-layer-shell` on Arch):
+
+```bash
+make FEATURES=layer-shell install
+```
+
+The same binary still works on GNOME, which has no layer-shell; there it opens as a normal window.
 
 ### Keyboard shortcut
 
@@ -109,18 +118,21 @@ The chip on the right of the search bar names the mode your text is in, and the 
 | Left / Right | Also move in the emoji grid |
 | Tab | While typing a path: complete it with the highlighted entry |
 | Alt+Up / Alt+Down | Step through past queries |
-| Backspace on an empty bar | Leave a conversation with Claude |
+| Ctrl+Shift+C | In an AI conversation: copy the latest fenced code block |
+| Escape / Ctrl+C | While AI is answering: stop generation without closing |
+| Backspace on an empty bar | Leave an AI conversation |
 | Escape | Close the launcher |
 
 ### Search Modes
 
 1. **Applications** (default): just type. `firefox`, `code`, `vsc` (initials), `frfx` (typo-tolerant)
-   - With an empty bar, the apps you use most are listed.
+   - With an empty bar, the apps you use most are listed immediately.
+   - Installed apps are monitored via GIO so newly installed or removed desktop entries appear automatically.
    - Apps always win over commands with the same name.
    - If nothing matches, web searches are offered.
 
 2. **Files**: `f report`, `file annual report`
-   - Searches file and folder names under the configured roots (your home directory by default). Recently modified files and ones you opened from here rank higher. The index is built in the background on first use and refreshed every few minutes.
+   - Searches file and folder names under the configured roots (your home directory by default), skipping `.gitignore`-matched clutter by default. Recently modified files and ones you opened from here rank higher. The index is built in parallel on a worker thread, watched for directory changes, and refreshed in the background.
    - Type a path to browse instead: `~/`, `~/Doc`, `/etc/`. Tab completes, Enter opens.
 
 3. **Window Switcher**: `sw` or `switch`, optionally followed by a filter. `sw kit`
@@ -131,7 +143,7 @@ The chip on the right of the search bar names the mode your text is in, and the 
    - **Units**: `5 km in miles`, `10 cm to in`, `2 gb in mb`, `90 min in h`, `100 km/h in mph`, `100 f to c`. Length, mass, volume, data, time, speed, area and temperature.
    - **Currencies**: `20 usd in eur`, `1000 jpy to gbp`. Uses European Central Bank reference rates, downloaded from frankfurter.dev at most twice a day and cached. Turn this off with `currency = false` if you do not want that request made.
 
-5. **Ask Claude**: anything ending in `?`, or starting with `ask ` or `ai `. See below.
+5. **Ask AI**: anything ending in `?`, starting with `ask ` or `ai `, or prefixed with a configured model name (`sonnet `, `llama `, `gemini `, `codex `, …). See below.
 
 6. **Emoji**: `emoji smile`, `:heart`. With nothing typed after the prefix, your recently used emojis come first.
 
@@ -153,29 +165,32 @@ The chip on the right of the search bar names the mode your text is in, and the 
 
 13. **Settings**: `poppi settings`, or just `settings`
 
-### Asking Claude
+### Asking AI
 
-Anything that ends with a question mark is a question for Claude (so is anything after `ask ` or `ai `):
+Anything ending with a question mark goes to your default AI model (so does anything after `ask ` or `ai `). Prefix a question with any configured model name to ask that model directly:
 
 ```
 why is the sky blue?
 what's the tar command to extract a .tar.gz?
-ask write a haiku about GTK
+sonnet explain Rust lifetimes in two sentences
+llama write a haiku about GTK
 ```
 
-Press Enter to send it. The answer streams into the launcher, with code, bold text and lists rendered.
+Press Enter to send it. The answer streams in place inside the launcher, with prose, bold/italic text, lists, and fenced code blocks rendered. Each code block has its own Copy button, or press `Ctrl+Shift+C` to copy the latest code block immediately.
 
-After the first answer you are in a conversation: whatever you type next is a follow-up, with or without a question mark, and Claude remembers the earlier turns. Up/Down scroll, Enter on an empty bar copies the latest answer, Backspace on an empty bar goes back to normal search, and closing the launcher ends the conversation.
+After the first answer you are in a conversation: whatever you type next is a follow-up (with or without `?`), and you can switch models mid-conversation by starting a turn with another model's name (e.g. `opus refine that`). Up/Down scroll, `Escape` or `Ctrl+C` stops a streaming answer without closing, Enter on an empty bar copies the latest answer, Backspace on an empty bar goes back to normal search, and closing the launcher ends the conversation.
 
-**Setup.** This uses the [Claude Code](https://claude.com/claude-code) CLI and whatever account it is logged in with, so it runs on your Pro or Max subscription:
+**Providers.** Configure models in `settings` → **AI models** or under `[ai.models.<name>]`:
 
-```bash
-claude        # then /login once, choosing your Claude subscription
-```
+- **CLI subscriptions (no API key needed)**:
+  - `claude`: uses [Claude Code](https://claude.com/claude-code) (`claude` → `/login`) on your Pro/Max subscription. Runs with all tools, MCP servers and session persistence disabled, and strips `ANTHROPIC_API_KEY` from the child environment so exported keys are never billed. Pre-warmed as you type.
+  - `gemini-cli`: uses Google's `gemini` CLI login.
+  - `codex`: uses OpenAI's `codex` CLI login in a read-only sandbox.
+- **Local servers (no API key needed)**: `ollama` (`http://localhost:11434/v1`), `lmstudio` (`http://localhost:1234/v1`), or `openai-compatible` (any custom `base_url`).
+- **Cloud APIs**: `openai`, `anthropic`, `gemini`, `openrouter`, `mistral`, `groq`, `deepseek`, `xai`, `perplexity`, `together`, `fireworks`, `cerebras`. Requests stream via `curl` with headers/keys passed over `stdin` so secrets never appear on a command line.
+- **Custom commands**: `command` pipes the prompt on `stdin` to any shell command (e.g. `llm -m gpt-4o`) and streams `stdout`.
 
-There is no API key setting. The launcher runs `claude -p` and removes `ANTHROPIC_API_KEY` from that process's environment, so an exported key is never billed instead. Questions count against your subscription's normal usage limits.
-
-The CLI is started with all tools, MCP servers and session saving turned off: Claude can only reply with text and cannot read files or run commands. To keep answers quick, the CLI is started as soon as you begin typing a question; your text is only sent when you press Enter. The default model is Haiku, the fastest; change it under `[claude]` or in the settings window.
+**API keys.** Checked in order: GNOME keyring (saved from the Settings window via `secret-tool`), the provider's environment variable (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `OPENROUTER_API_KEY`, … or `api_key_env`), or `api_key` in `config.toml` (which restricts the file to `0600`). Older `[claude]` sections are migrated automatically.
 
 ## ⚙️ Configuration
 
@@ -208,17 +223,44 @@ chatgpt_enabled = true
 enabled = true
 currency = true               # download ECB exchange rates for currency conversion
 
-[claude]
+[ai]
 enabled = true
-model = "haiku"               # or "sonnet", "opus", or a full model name
-command = "claude"            # the Claude Code executable
-# system_prompt = "..."       # instructions for how Claude should answer
+default = "haiku"             # model used when no model prefix is typed
+# system_prompt = "..."       # instructions given to every model
+
+[ai.models.haiku]
+provider = "claude"
+model = "haiku"
+
+[ai.models.sonnet]
+provider = "claude"
+model = "sonnet"
+
+[ai.models.opus]
+provider = "claude"
+model = "opus"
+
+[ai.models.gemini]
+provider = "gemini-cli"
+
+[ai.models.codex]
+provider = "codex"
+
+[ai.models.llama]
+provider = "ollama"
+model = "llama3.2"
+
+# Example cloud API model (save the key in Settings -> AI models, or export $OPENAI_API_KEY):
+# [ai.models.gpt]
+# provider = "openai"
+# model = "gpt-5-mini"
 
 [files]
 enabled = true
 roots = ["~"]                 # directories to index
 max_depth = 6                 # levels below each root
 include_hidden = false
+respect_gitignore = true      # skip paths ignored by .gitignore
 exclude = ["node_modules", "target", "__pycache__", "venv", "snap"]
 
 [clipboard]

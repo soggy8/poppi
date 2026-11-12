@@ -1,13 +1,14 @@
-//! The conversation with Claude.
+//! The conversation with an AI model.
 //!
-//! One CLI process (`claude::Session`) lives for as long as a conversation
-//! does. It is started as soon as a question is being typed, so that by the
-//! time Enter is pressed the CLI has finished starting up; nothing is sent
-//! to Claude before Enter.
+//! One `ai::Session` lives for as long as the conversation keeps talking to
+//! the same model. For the Claude CLI it is started as soon as a question is
+//! being typed, so that by the time Enter is pressed the CLI has finished
+//! starting up; nothing is sent to any model before Enter.
 
 use super::Launcher;
-use crate::claude::{self, Event};
-use crate::state::{Turn, TurnStatus};
+use crate::ai::{self, providers, Event};
+use crate::markdown;
+use crate::state::{self, ResultItem, Turn, TurnStatus};
 use gtk::glib;
 use gtk::prelude::*;
 use std::rc::Rc;
@@ -16,26 +17,108 @@ use std::time::Duration;
 const POLL_INTERVAL: Duration = Duration::from_millis(40);
 
 impl Launcher {
-    /// Start the CLI if it is not running. Errors surface when asking.
-    pub(super) fn warm_up_claude(&self) {
-        let _ = self.ensure_session();
+    /// Get the model about to be asked ready. Errors surface when asking.
+    pub(super) fn warm_up_ai(&self) {
+        let model = {
+            let state = self.state.borrow();
+            // Never replace a session that is still answering.
+            if state.chat_busy() {
+                return;
+            }
+            state.results.iter().find_map(|item| match item {
+                ResultItem::Ask { model, .. } => Some(model.clone()),
+                _ => None,
+            })
+        };
+        if let Some(model) = model {
+            let _ = self.ensure_session(&model);
+        }
     }
 
-    fn ensure_session(&self) -> Result<(), String> {
-        if self.claude.borrow().is_some() {
-            return Ok(());
+    /// A session for `model`, replacing one for another model (or for an
+    /// entry whose settings have changed since).
+    fn ensure_session(&self, model: &str) -> Result<(), String> {
+        let resolved = providers::resolve(&self.config.borrow().ai, Some(model))?;
+        {
+            let mut ai = self.ai.borrow_mut();
+            if let Some(session) = ai.as_mut() {
+                if session.model == resolved {
+                    return session.warm_up();
+                }
+            }
         }
-        let config = self.config.borrow().claude.clone();
-        let session = claude::Session::start(&config)?;
-        *self.claude.borrow_mut() = Some(session);
+        // Drop the old session first: it may own a process.
+        self.ai.borrow_mut().take();
+        let session = ai::Session::start(resolved)?;
+        *self.ai.borrow_mut() = Some(session);
         Ok(())
     }
 
-    /// Stop the CLI and forget the conversation.
+    /// Stop whatever is running and forget the conversation.
     pub(super) fn end_conversation(&self) {
-        self.claude.borrow_mut().take();
+        self.ai.borrow_mut().take();
         self.chat_follow.set(false);
         self.state.borrow_mut().chat.clear();
+        self.transcript_view.borrow_mut().clear();
+    }
+
+    /// Stop an in-flight answer while keeping the launcher and conversation open.
+    pub(super) fn stop_generation(self: &Rc<Self>) -> bool {
+        if !self.state.borrow().chat_busy() {
+            return false;
+        }
+        if let Some(session) = self.ai.borrow_mut().as_mut() {
+            session.cancel();
+        }
+        {
+            let mut state = self.state.borrow_mut();
+            if let Some(turn) = state.chat.last_mut().filter(|turn| !turn.is_finished()) {
+                if turn.text.trim().is_empty() {
+                    turn.text = "Stopped.".to_string();
+                    turn.status = TurnStatus::Failed;
+                } else {
+                    turn.status = TurnStatus::Done;
+                }
+            }
+        }
+        self.ai_polling.set(false);
+        self.sync_streaming_chat(true);
+        self.flash_footer_notice("Stopped");
+        true
+    }
+
+    /// Copy the latest fenced code block (or the latest answer when there is
+    /// no code block) without leaving the conversation.
+    pub(super) fn copy_latest_code(self: &Rc<Self>) -> bool {
+        let target = {
+            let state = self.state.borrow();
+            let code = state
+                .chat
+                .iter()
+                .rev()
+                .filter(|turn| turn.status == TurnStatus::Done)
+                .find_map(|turn| markdown::last_code_block(&turn.text))
+                .map(|code| (code, true));
+            code.or_else(|| {
+                state
+                    .chat
+                    .iter()
+                    .rev()
+                    .find(|turn| turn.status == TurnStatus::Done && !turn.text.trim().is_empty())
+                    .map(|turn| (turn.text.trim().to_string(), false))
+            })
+        };
+        let Some((text, is_code)) = target else {
+            return false;
+        };
+        if let Err(error) = self.copy_text(&text) {
+            self.flash_footer_notice(&error);
+        } else if is_code {
+            self.flash_footer_notice("Copied code to clipboard");
+        } else {
+            self.flash_footer_notice("Copied answer to clipboard");
+        }
+        true
     }
 
     /// Backspace on an empty bar: back to normal search.
@@ -45,39 +128,39 @@ impl Launcher {
     }
 
     /// Send a question (the first, or a follow-up) and stream the answer.
-    pub(super) fn ask(self: &Rc<Self>, question: String) {
+    pub(super) fn ask(self: &Rc<Self>, question: String, model: String) {
         if self.state.borrow().chat_busy() {
             // One answer at a time; the footer says it is still answering.
             return;
         }
 
-        let sent = self.ensure_session().and_then(|()| {
-            self.claude
+        let history = state::chat_history(&self.state.borrow().chat);
+        let label = providers::label(&self.config.borrow().ai, &model);
+        let sent = self.ensure_session(&model).and_then(|()| {
+            self.ai
                 .borrow_mut()
                 .as_mut()
-                .ok_or_else(|| "Claude is not running".to_string())?
-                .send(&question)
+                .ok_or_else(|| "The model is not ready".to_string())?
+                .send(&history, &question)
         });
-        let turn = match sent {
-            Ok(()) => Turn {
-                question: question.clone(),
-                text: String::new(),
-                status: TurnStatus::Thinking,
-            },
+        let (text, status) = match sent {
+            Ok(()) => (String::new(), TurnStatus::Thinking),
             Err(error) => {
-                // A broken process is not worth keeping.
-                self.claude.borrow_mut().take();
-                Turn {
-                    question: question.clone(),
-                    text: error,
-                    status: TurnStatus::Failed,
-                }
+                // A broken session is not worth keeping.
+                self.ai.borrow_mut().take();
+                (error, TurnStatus::Failed)
             }
         };
         {
             let mut state = self.state.borrow_mut();
             state.history.push(&self.entry.text());
-            state.chat.push(turn);
+            state.chat.push(Turn {
+                question,
+                text,
+                status,
+                model,
+                label,
+            });
         }
 
         self.chat_follow.set(true);
@@ -91,26 +174,29 @@ impl Launcher {
     }
 
     fn start_polling(self: &Rc<Self>) {
-        if self.claude_polling.replace(true) {
+        if self.ai_polling.replace(true) {
             return;
         }
         let this = self.clone();
         glib::timeout_add_local(POLL_INTERVAL, move || {
-            let events = match this.claude.borrow().as_ref() {
+            let events = match this.ai.borrow().as_ref() {
                 Some(session) => session.poll(),
                 None => Vec::new(),
             };
             let mut session_broken = false;
+            let mut status_changed = false;
             let changed = !events.is_empty();
             {
                 let mut state = this.state.borrow_mut();
                 for event in events {
-                    let Some(turn) = state.chat.last_mut().filter(|turn| !turn.is_finished()) else {
+                    let Some(turn) = state.chat.last_mut().filter(|turn| !turn.is_finished())
+                    else {
                         // An event with no question waiting for it: the
                         // process failed while idle.
                         session_broken |= matches!(event, Event::Failed(_));
                         continue;
                     };
+                    let prev_status = turn.status.clone();
                     match event {
                         Event::Delta(text) => {
                             turn.text.push_str(&text);
@@ -128,19 +214,35 @@ impl Launcher {
                             session_broken = true;
                         }
                     }
+                    status_changed |= turn.status != prev_status;
                 }
             }
             if session_broken {
-                this.claude.borrow_mut().take();
+                this.ai.borrow_mut().take();
             }
-            if changed && this.window.is_visible() {
-                this.refresh();
+            if changed {
+                this.sync_streaming_chat(status_changed);
             }
 
-            if this.state.borrow().chat_busy() && this.claude.borrow().is_some() {
+            if this.state.borrow().chat_busy() && this.ai.borrow().is_some() {
                 glib::ControlFlow::Continue
             } else {
-                this.claude_polling.set(false);
+                // A session dropped mid-answer leaves the turn unfinished.
+                let mut unfinished = false;
+                {
+                    let mut state = this.state.borrow_mut();
+                    if let Some(turn) = state.chat.last_mut().filter(|turn| !turn.is_finished()) {
+                        turn.status = TurnStatus::Failed;
+                        if turn.text.is_empty() {
+                            turn.text = "Stopped.".to_string();
+                        }
+                        unfinished = true;
+                    }
+                }
+                if unfinished {
+                    this.sync_streaming_chat(true);
+                }
+                this.ai_polling.set(false);
                 glib::ControlFlow::Break
             }
         });

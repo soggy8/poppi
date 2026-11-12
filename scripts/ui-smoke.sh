@@ -2,12 +2,14 @@
 # Drive the real launcher UI through its main modes in a headless compositor
 # and check what it shows. Needs mutter and dbus-run-session.
 #
-#   scripts/ui-smoke.sh [--shots DIR] [--theme dark|light] [--claude]
+#   scripts/ui-smoke.sh [--shots DIR] [--theme dark|light] [--claude] [--ollama]
 #
 # --shots DIR  also save a screenshot of every step into DIR
 # --theme MODE run in dark (default) or light mode
-# --claude     additionally ask Claude one question and a follow-up (uses the
-#              logged-in Claude Code account; needs network access)
+# --claude     additionally ask Claude Haiku one question and a follow-up
+#              (uses the logged-in Claude Code account; needs network access)
+# --ollama     with --claude: then send a follow-up to the local llama3.2
+#              through Ollama, which must be running
 #
 # Nothing in your own config, history or usage data is touched: the launcher
 # runs with temporary XDG directories.
@@ -16,12 +18,14 @@ set -euo pipefail
 shots=""
 theme="dark"
 with_claude=0
+with_ollama=0
 while [ $# -gt 0 ]; do
     case "$1" in
         --shots) shots=$(realpath -m "$2"); shift 2 ;;
         --theme) theme=$2; shift 2 ;;
         --claude) with_claude=1; shift ;;
-        *) echo "usage: $0 [--shots DIR] [--theme dark|light] [--claude]" >&2; exit 2 ;;
+        --ollama) with_ollama=1; shift ;;
+        *) echo "usage: $0 [--shots DIR] [--theme dark|light] [--claude] [--ollama]" >&2; exit 2 ;;
     esac
 done
 
@@ -37,10 +41,19 @@ bin="$repo/target/debug/poppi_launcher"
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 home="$work/home"
-mkdir -p "$work/config/poppi_launcher" "$work/state/poppi_launcher" "$work/cache" \
+mkdir -p "$work/config/poppi_launcher/scripts" "$work/state/poppi_launcher" "$work/cache" \
     "$home/Documents/reports" "$home/Pictures"
 touch "$home/Documents/report-2026.pdf" "$home/Documents/reports/annual report.txt" \
-    "$home/Documents/notes.md" "$home/Pictures/report-cover.png" "$home/deploy.sh"
+    "$home/Pictures/report-cover.png" "$home/deploy.sh"
+printf 'Meeting notes\nToken: PoppiSecret\n' > "$home/Documents/notes.md"
+cat > "$work/config/poppi_launcher/scripts/greet.sh" <<'SCRIPT'
+#!/usr/bin/env bash
+# @poppi.keyword greet
+# @poppi.name Greeter
+# @poppi.mode list
+printf 'Hello %s\tScript row\n' "${1:-world}"
+SCRIPT
+chmod +x "$work/config/poppi_launcher/scripts/greet.sh"
 [ -n "$shots" ] && mkdir -p "$shots"
 
 cat > "$work/config/poppi_launcher/config.toml" <<CONFIG
@@ -52,6 +65,25 @@ roots = ["$home"]
 
 [aliases]
 gh = "https://github.com/search?q={}"
+
+[ai]
+default = "haiku"
+
+[ai.models.haiku]
+provider = "claude"
+model = "haiku"
+
+[ai.models.llama]
+provider = "ollama"
+model = "llama3.2"
+
+[ai.models.gpt]
+provider = "openai"
+model = "gpt-5-mini"
+
+[ai.models.mock]
+provider = "command"
+command = "input=\$(cat); case \"\$input\" in *hang*) echo 'Partial answer'; sleep 30 ;; *) printf 'Use tar:\\n\\n\`\`\`sh\\ntar -xzf archive.tar.gz\\n\`\`\`\\n' ;; esac"
 CONFIG
 echo '["yt rust gtk4 tutorial","2^10"]' > "$work/state/poppi_launcher/history.json"
 
@@ -82,9 +114,34 @@ if [ "$with_claude" = 1 ]; then
         "and of Croatia"                     # 21
         "<enter>"                            # 22
         "<wait>" "<wait>" "<wait>"           # 23-25
-        "<backspace>"                        # 26
     )
+    if [ "$with_ollama" = 1 ]; then
+        steps+=(
+            "llama what was the first country I asked about"   # 26
+            "<enter>"                                          # 27
+            "<wait>" "<wait>" "<wait>" "<wait>" "<wait>"       # 28-32
+        )
+    fi
+    steps+=("<backspace>")
     step_ms=2000
+else
+    steps+=(
+        "mock show tar command"              # 16
+        "<enter>"                            # 17
+        "<ctrl-shift-c>"                     # 18
+        "hang"                               # 19
+        "<enter>"                            # 20
+        "<escape>"                           # 21
+        "<backspace>"                        # 22
+        "#4a9eff"                            # 23
+        "<ctrl-k>"                           # 24
+        "<escape>"                           # 25
+        "3pm est in cet"                     # 26
+        "greet Poppi"                        # 27
+        "<wait>"                             # 28
+        "g PoppiSecret"                      # 29
+        "<wait>"                             # 30
+    )
 fi
 steps+=("poppi settings" "<enter>")
 script=$(IFS='|'; echo "${steps[*]}")
@@ -137,11 +194,29 @@ expect 14 "window mode"                         'mode="Windows"'
 expect 15 "Alt+Up recalls the last query"       'query="yt rust gtk4 tutorial"'
 last=$(( ${#steps[@]} - 1 ))
 if [ "$with_claude" = 1 ]; then
-    expect 16 "a question offers Claude"          'mode="Claude" results=1 first=ask'
-    expect 20 "Claude answers"                    'first=transcript .*chat=Done:[1-9]'
+    expect 16 "a question offers the default model" 'mode="AI" results=1 first=ask'
+    expect 20 "Claude answers"                    'first=transcript .*chat=haiku:Done:[1-9]'
     expect 21 "typing continues the conversation" 'results=2 first=transcript selected=ask'
-    expect 25 "the follow-up is answered"         'query="" .*chat=Done:[1-9]'
-    expect 26 "Backspace leaves the conversation" 'mode="" results=0 .*chat=-'
+    expect 25 "the follow-up is answered"         'query="" .*chat=haiku:Done:[1-9]'
+    if [ "$with_ollama" = 1 ]; then
+        expect 26 "a model name switches the model" 'results=2 first=transcript selected=ask'
+        expect 32 "the other model answers"         'chat=llama:Done:[1-9]'
+    fi
+    expect "$((last - 2))" "Backspace leaves the conversation" 'mode="" results=0 .*chat=-'
+else
+    expect 16 "model prefix selects that AI model"     'mode="AI" results=1 first=ask'
+    expect 17 "AI streams markdown and code block"     'first=transcript .*chat=mock:Done:[1-9]'
+    expect 18 "Ctrl+Shift+C copies code in place"      'first=transcript .*chat=mock:Done:[1-9][0-9]* .*visible=true'
+    expect 19 "typing continues the conversation"      'results=2 first=transcript selected=ask'
+    expect 20 "follow-up starts streaming"             'first=transcript .*chat=mock:(Thinking|Answering):'
+    expect 21 "Escape stops answer without closing"    'first=transcript .*chat=mock:(Done|Failed):[1-9][0-9]* .*visible=true'
+    expect 22 "Backspace leaves the conversation"      'mode="" results=0 .*chat=-'
+    expect 23 "color swatch conversion"                'mode="Calculator" results=1 first=calc'
+    expect 24 "Ctrl+K opens result action menu"        'mode="Actions" results=2 first=action'
+    expect 25 "Escape leaves action menu to query"     'query="#4a9eff" mode="Calculator" results=1'
+    expect 26 "timezone conversion"                    'mode="Calculator" results=1 first=calc'
+    expect 28 "custom list script returns rows"        'mode="Script" results=1 first=script-item'
+    expect 30 "file content search finds line"         'mode="Files" results=1 first=grep'
 fi
 expect $((last - 1)) "settings entry"            'mode="Settings" results=1 first=settings'
 expect "$last" "opening settings hides the launcher" 'visible=false'

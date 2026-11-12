@@ -1,16 +1,19 @@
+mod ai;
 mod alias;
 mod app_launcher;
 mod calculator;
-mod claude;
 mod clipboard;
 mod config;
+mod conversions;
 mod emoji_picker;
 mod files;
 mod history;
 mod markdown;
 mod matching;
+mod model_editor;
 mod query;
 mod rows;
+mod scripts;
 mod search;
 mod settings;
 mod state;
@@ -26,7 +29,7 @@ mod window_switcher;
 use config::Config;
 use gtk::prelude::*;
 use gtk::{gio, glib, Application};
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 const APP_ID: &str = "com.poppi.launcher";
@@ -39,6 +42,7 @@ Usage: poppi_launcher [OPTION]
 With no option, shows the launcher, or toggles it if it is already running.
 
 Options:
+  --daemon       Start in the background without opening the window
   --quit         Stop the instance running in the background
   -V, --version  Print the version
   -h, --help     Print this help";
@@ -89,7 +93,7 @@ fn watch_config(config: &Rc<RefCell<Config>>) -> Option<gio::FileMonitor> {
 }
 
 fn main() -> glib::ExitCode {
-    match std::env::args().nth(1).as_deref() {
+    let daemon = match std::env::args().nth(1).as_deref() {
         Some("--version" | "-V") => {
             println!("poppi_launcher {}", env!("CARGO_PKG_VERSION"));
             return glib::ExitCode::SUCCESS;
@@ -99,12 +103,13 @@ fn main() -> glib::ExitCode {
             return glib::ExitCode::SUCCESS;
         }
         Some("--quit") => return quit_running_instance(),
+        Some("--daemon") => true,
         Some(other) => {
             eprintln!("Unknown option: {}\n\n{}", other, HELP);
             return glib::ExitCode::FAILURE;
         }
-        None => {}
-    }
+        None => false,
+    };
 
     let (config, config_error) = Config::load();
     if let Some(error) = &config_error {
@@ -115,6 +120,15 @@ fn main() -> glib::ExitCode {
     // Single instance: a second `poppi_launcher` process forwards its
     // activation to the running one and exits, which toggles the window.
     let app = Application::builder().application_id(APP_ID).build();
+    if daemon {
+        if let Err(e) = app.register(gio::Cancellable::NONE) {
+            eprintln!("Could not reach the session bus: {}", e);
+            return glib::ExitCode::FAILURE;
+        }
+        if app.is_remote() {
+            return glib::ExitCode::SUCCESS;
+        }
+    }
 
     let startup_config = config.clone();
     app.connect_startup(move |app| {
@@ -136,9 +150,19 @@ fn main() -> glib::ExitCode {
         if let Some(monitor) = watch_config(&startup_config) {
             std::mem::forget(monitor);
         }
+        if daemon {
+            std::mem::forget(app.hold());
+        }
     });
 
-    app.connect_activate(move |app| ui::activate(app, &config, config_error.as_deref()));
+    let skip_initial_show = Cell::new(daemon);
+    app.connect_activate(move |app| {
+        if skip_initial_show.replace(false) {
+            ui::warm_up(app, &config, config_error.as_deref());
+        } else {
+            ui::activate(app, &config, config_error.as_deref());
+        }
+    });
 
     // Arguments were handled above; GApplication gets none.
     app.run_with_args::<&str>(&[])

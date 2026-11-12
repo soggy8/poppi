@@ -178,7 +178,24 @@ impl AppLauncher {
 
         // Stable sort: equal scores stay in alphabetical order.
         results.sort_by(|a, b| b.1.cmp(&a.1));
-        results.into_iter().take(limit).map(|(app, _)| app).collect()
+        results
+            .into_iter()
+            .take(limit)
+            .map(|(app, _)| app)
+            .collect()
+    }
+
+    /// Extra desktop actions belonging to `app` (e.g. "New Private Window").
+    pub fn actions_for(&self, app: &App) -> Vec<App> {
+        if app.action.is_some() {
+            return Vec::new();
+        }
+        let prefix = format!("{}::", app.id);
+        self.apps
+            .iter()
+            .filter(|entry| entry.id.starts_with(&prefix))
+            .cloned()
+            .collect()
     }
 
     /// Apps launched from here, ranked by how often and how recently.
@@ -264,7 +281,13 @@ mod tests {
             &[]
         )
         .is_none());
-        assert!(score("slides", "libreoffice impress", Some("create slideshows and slides"), &[]).is_some());
+        assert!(score(
+            "slides",
+            "libreoffice impress",
+            Some("create slideshows and slides"),
+            &[]
+        )
+        .is_some());
     }
 
     #[test]

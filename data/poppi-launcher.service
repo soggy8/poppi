@@ -1,0 +1,15 @@
+[Unit]
+Description=Poppi Launcher background service
+Documentation=https://github.com/soggy8/poppi
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=@BINDIR@/poppi_launcher --daemon
+ExecStop=@BINDIR@/poppi_launcher --quit
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=graphical-session.target

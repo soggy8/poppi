@@ -23,6 +23,20 @@ impl Terminal {
         utils::spawn_detached(Command::new(&terminal).args(argv))
     }
 
+    /// Open an interactive terminal in `dir`.
+    pub fn open_in_dir(dir: &std::path::Path) -> Result<(), String> {
+        let terminal = Self::default_terminal()?;
+        let name = terminal.rsplit('/').next().unwrap_or(&terminal);
+        let mut cmd = Command::new(&terminal);
+        cmd.current_dir(dir);
+        if name == "wezterm" {
+            cmd.args(["start", "--cwd"]).arg(dir);
+        } else if matches!(name, "gnome-terminal" | "gnome-terminal-server" | "ptyxis") {
+            cmd.arg(format!("--working-directory={}", dir.display()));
+        }
+        utils::spawn_detached(&mut cmd)
+    }
+
     fn default_terminal() -> Result<String, String> {
         // 1. $TERMINAL (user preference)
         if let Ok(term) = std::env::var("TERMINAL") {
@@ -40,7 +54,11 @@ impl Terminal {
 
         // 3. GNOME's configured terminal
         if let Ok(output) = Command::new("gsettings")
-            .args(["get", "org.gnome.desktop.default-applications.terminal", "exec"])
+            .args([
+                "get",
+                "org.gnome.desktop.default-applications.terminal",
+                "exec",
+            ])
             .output()
         {
             if output.status.success() {
@@ -132,6 +150,8 @@ mod tests {
         assert!(Terminal::looks_like_command("sh -c true"));
         assert!(!Terminal::looks_like_command(""));
         assert!(!Terminal::looks_like_command("sh;poweroff"));
-        assert!(!Terminal::looks_like_command("definitely-not-a-command-xyz"));
+        assert!(!Terminal::looks_like_command(
+            "definitely-not-a-command-xyz"
+        ));
     }
 }

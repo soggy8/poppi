@@ -1,6 +1,6 @@
 [package]
 name = "poppi_launcher"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 description = "Fast application launcher for GNOME"
 license = "MIT"
@@ -16,10 +16,14 @@ serde_json = "1.0"
 toml = "0.8"
 dirs = "5.0"
 urlencoding = "2.1"
+gtk4-layer-shell = { version = "0.5", optional = true }
 
 [features]
 # Scripted UI driver used by scripts/ui-smoke.sh; never enabled in releases.
 ui-test = []
+# Use the wlr layer-shell protocol (Sway, Hyprland, Niri, KDE) when the
+# compositor offers it; needs the gtk4-layer-shell system library.
+layer-shell = ["dep:gtk4-layer-shell"]
 
 [profile.release]
 opt-level = 3

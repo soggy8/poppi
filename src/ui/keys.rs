@@ -21,8 +21,35 @@ impl Launcher {
         };
         let alt = modifiers.contains(gdk::ModifierType::ALT_MASK);
         let ctrl = modifiers.contains(gdk::ModifierType::CONTROL_MASK);
+        let shift = modifiers.contains(gdk::ModifierType::SHIFT_MASK);
 
-        if answer_mode && !alt && self.on_chat_key(key) {
+        if answer_mode && !alt && self.on_chat_key(key, ctrl, shift) {
+            return glib::Propagation::Stop;
+        }
+
+        if ctrl
+            && !alt
+            && !shift
+            && matches!(key, gdk::Key::k | gdk::Key::K)
+            && self.toggle_action_menu()
+        {
+            return glib::Propagation::Stop;
+        }
+
+        if ctrl && !alt && !shift && matches!(key, gdk::Key::w | gdk::Key::W) {
+            if let Some(ResultItem::Window { window, .. }) = self.selected_item() {
+                self.close_window_in_place(window);
+                return glib::Propagation::Stop;
+            }
+        }
+
+        if !ctrl
+            && !alt
+            && !shift
+            && key == gdk::Key::BackSpace
+            && self.entry.text().is_empty()
+            && self.leave_action_menu()
+        {
             return glib::Propagation::Stop;
         }
 
@@ -38,7 +65,9 @@ impl Launcher {
 
         match key {
             gdk::Key::Escape => {
-                self.dismiss();
+                if !self.leave_action_menu() && !self.stop_generation() {
+                    self.dismiss();
+                }
                 glib::Propagation::Stop
             }
             gdk::Key::Up | gdk::Key::KP_Up if alt => {
@@ -75,7 +104,13 @@ impl Launcher {
             }
             gdk::Key::Up | gdk::Key::KP_Up => {
                 if emoji_mode {
-                    self.move_emoji(count, |i, _| if i >= EMOJI_COLUMNS { i - EMOJI_COLUMNS } else { i });
+                    self.move_emoji(count, |i, _| {
+                        if i >= EMOJI_COLUMNS {
+                            i - EMOJI_COLUMNS
+                        } else {
+                            i
+                        }
+                    });
                 } else {
                     self.move_list(count, -1);
                 }
@@ -83,7 +118,14 @@ impl Launcher {
             }
             gdk::Key::Page_Down | gdk::Key::Page_Up if !emoji_mode => {
                 let page = self.config.borrow().behavior.max_results as i32;
-                self.move_list(count, if key == gdk::Key::Page_Down { page } else { -page });
+                self.move_list(
+                    count,
+                    if key == gdk::Key::Page_Down {
+                        page
+                    } else {
+                        -page
+                    },
+                );
                 glib::Propagation::Stop
             }
             gdk::Key::Right | gdk::Key::KP_Right if emoji_mode && count > 0 => {
@@ -99,11 +141,26 @@ impl Launcher {
     }
 
     /// Keys that mean something else during a conversation: the arrows
-    /// scroll it, and Backspace on an empty bar leaves it.
-    fn on_chat_key(self: &Rc<Self>, key: gdk::Key) -> bool {
-        if key == gdk::Key::BackSpace && self.entry.text().is_empty() {
+    /// scroll it, Ctrl+Shift+C copies the latest code block, Ctrl+C stops an
+    /// in-flight answer, and Backspace on an empty bar leaves the chat.
+    fn on_chat_key(self: &Rc<Self>, key: gdk::Key, ctrl: bool, shift: bool) -> bool {
+        if ctrl && shift && matches!(key, gdk::Key::C | gdk::Key::c) {
+            return self.copy_latest_code();
+        }
+        if ctrl
+            && !shift
+            && matches!(key, gdk::Key::C | gdk::Key::c)
+            && self.entry.selection_bounds().is_none()
+            && self.stop_generation()
+        {
+            return true;
+        }
+        if !ctrl && !shift && key == gdk::Key::BackSpace && self.entry.text().is_empty() {
             self.leave_conversation();
             return true;
+        }
+        if ctrl {
+            return false;
         }
 
         let adjustment = self.scrolled.vadjustment();

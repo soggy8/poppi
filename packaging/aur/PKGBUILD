@@ -4,9 +4,9 @@
 # verified on Arch: build it with `makepkg -si` in this directory and
 # report what needs adjusting.
 pkgname=poppi-launcher-git
-pkgver=0.2.0
+pkgver=0.3.0
 pkgrel=1
-pkgdesc="Fast application launcher for GNOME: apps, files, windows, calculator, emoji, Claude"
+pkgdesc="Fast application launcher for GNOME: apps, files, windows, calculator, emoji, AI"
 arch=('x86_64' 'aarch64')
 url="https://github.com/soggy8/poppi"
 license=('MIT')
@@ -17,8 +17,10 @@ optdepends=(
     'xclip: copy results on X11'
     'xdotool: type emojis and list windows on X11'
     'wmctrl: window switcher on X11'
-    'curl: currency conversion'
-    'claude-code: ask Claude'
+    'curl: currency conversion and HTTP AI providers'
+    'libsecret: store AI API keys in the GNOME keyring'
+    'claude-code: ask Claude on a Claude subscription'
+    'ollama: ask local AI models'
 )
 provides=('poppi-launcher')
 conflicts=('poppi-launcher')

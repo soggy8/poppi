@@ -1,23 +1,26 @@
 //! What the launcher knows and what it would show for a given query.
 //! No widgets here; the `ui` module renders `results`.
 
+use crate::ai::{self, providers};
 use crate::alias::{self, AliasTarget};
 use crate::app_launcher::{App, AppLauncher};
-use crate::clipboard::ClipboardHistory;
+use crate::clipboard::{self, ClipboardEntry, ClipboardHistory};
 use crate::config::Config;
 use crate::emoji_picker::{self, Emoji, EmojiPicker};
-use crate::files::{self, FileEntry};
+use crate::files::{self, ContentMatch, FileEntry};
 use crate::history::History;
 use crate::matching::Matcher;
 use crate::query::{self, Intent, ParseOptions};
+use crate::scripts::{Script, ScriptCatalog, ScriptItem, ScriptMode};
 use crate::search::{self, Engine};
 use crate::system::SystemAction;
 use crate::terminal::Terminal;
 use crate::units::{self, Rates};
 use crate::usage::{self, Usage};
-use crate::window_switcher::{self, OpenWindow};
+use crate::window_switcher::{self, OpenWindow, WindowId};
 use gtk::gio;
-use std::rc::Rc;
+use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 pub const EMOJI_COLUMNS: usize = 8;
@@ -31,6 +34,7 @@ pub const RESULT_LIMIT: usize = 50;
 /// The file index is rebuilt in the background when older than this.
 const FILE_INDEX_MAX_AGE: Duration = Duration::from_secs(300);
 const MIN_FILE_QUERY: usize = 2;
+const MIN_GREP_QUERY: usize = 3;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum TurnStatus {
@@ -40,12 +44,16 @@ pub enum TurnStatus {
     Failed,
 }
 
-/// One question to Claude and what has come back so far.
+/// One question to a model and what has come back so far.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Turn {
     pub question: String,
     pub text: String,
     pub status: TurnStatus,
+    /// Name of the model asked.
+    pub model: String,
+    /// Its display name.
+    pub label: String,
 }
 
 impl Turn {
@@ -54,28 +62,89 @@ impl Turn {
     }
 }
 
+/// The finished turns as messages, for models that need the context sent.
+pub fn chat_history(turns: &[Turn]) -> Vec<ai::Message> {
+    turns
+        .iter()
+        .filter(|turn| turn.status == TurnStatus::Done)
+        .flat_map(|turn| {
+            [
+                ai::Message::user(&turn.question),
+                ai::Message::assistant(&turn.text),
+            ]
+        })
+        .collect()
+}
+
+#[derive(Clone, Debug)]
+pub enum SecondaryAction {
+    LaunchApp(App),
+    OpenFile { file: FileEntry, reveal: bool },
+    OpenTerminalInDir(PathBuf),
+    FocusWindow(OpenWindow),
+    CloseWindow(OpenWindow),
+    CopyText(String),
+    ToggleClipboardPin(String),
+    RemoveClipboardEntry(String),
+}
+
 #[derive(Clone, Debug)]
 pub enum ResultItem {
     App(App),
-    Calc { expression: String, result: String },
+    Calc {
+        expression: String,
+        result: String,
+        swatch: Option<(u8, u8, u8, u8)>,
+    },
     Emoji(Emoji),
     Terminal(String),
-    Search { engine: Engine, query: String },
-    Window { window: OpenWindow, icon: Option<gio::Icon> },
+    Search {
+        engine: Engine,
+        query: String,
+    },
+    Window {
+        window: OpenWindow,
+        icon: Option<gio::Icon>,
+    },
     File(FileEntry),
-    Alias { name: String, target: AliasTarget },
+    ContentMatch(ContentMatch),
+    Alias {
+        name: String,
+        target: AliasTarget,
+    },
+    /// An executable action script from `~/.config/poppi_launcher/scripts/`.
+    ScriptRun {
+        script: Script,
+        args: String,
+    },
+    /// A row emitted by a `list`-mode script.
+    ScriptOutput(ScriptItem),
+    /// A secondary action shown in the `Ctrl+K` action menu.
+    ItemAction {
+        title: String,
+        subtitle: String,
+        icon: &'static str,
+        action: SecondaryAction,
+    },
     /// A past query; activating it puts it back in the search bar.
     History(String),
     ClearHistory,
-    /// A text from the clipboard history.
-    Clipboard(String),
+    /// A text from the clipboard history (pinned or transient).
+    Clipboard(ClipboardEntry),
     System(SystemAction),
     /// Second step for a system action that has no confirmation of its own.
     Confirm(SystemAction),
-    /// Offer to send a question to Claude; nothing is sent until Enter.
-    Ask { question: String, model: String },
-    /// The conversation with Claude so far.
-    Transcript { turns: Vec<Turn>, model: String },
+    /// Offer to send a question to a model (by name); nothing is sent
+    /// until Enter.
+    Ask {
+        question: String,
+        model: String,
+        label: String,
+    },
+    /// The conversation so far.
+    Transcript {
+        turns: Vec<Turn>,
+    },
     Settings,
     /// A message row; activating it does nothing.
     Info(String),
@@ -93,9 +162,11 @@ pub enum Mode {
     Calculator,
     Terminal,
     Alias,
+    Script,
+    Actions,
     History,
     Clipboard,
-    Claude,
+    Ai,
     Settings,
 }
 
@@ -111,9 +182,11 @@ impl Mode {
             Mode::Calculator => "Calculator",
             Mode::Terminal => "Terminal",
             Mode::Alias => "Alias",
+            Mode::Script => "Script",
+            Mode::Actions => "Actions",
             Mode::History => "History",
             Mode::Clipboard => "Clipboard",
-            Mode::Claude => "Claude",
+            Mode::Ai => "AI",
             Mode::Settings => "Settings",
         }
     }
@@ -127,17 +200,38 @@ pub enum WindowList {
 }
 
 /// Background work `update` asks the UI to start.
-#[derive(Debug, Default, Clone, Copy, PartialEq)]
+#[derive(Debug, Default, Clone, PartialEq)]
 pub struct Needs {
     pub windows: bool,
     pub files: bool,
     pub rates: bool,
-    /// Start the Claude CLI now so it is ready when the question is sent.
-    pub claude: bool,
+    /// Get the model in the `Ask` row ready (starts the Claude CLI) so it
+    /// answers quickly once the question is sent.
+    pub ai: bool,
+    /// Run a `list`-mode script `(script, filter)` on a worker thread.
+    pub script: Option<(Script, String)>,
+    /// Search file contents `(pattern, index)` on worker threads.
+    pub grep: Option<(String, Arc<Vec<FileEntry>>)>,
+    /// List a directory for path completion on a worker thread.
+    pub dir: Option<PathBuf>,
+}
+
+struct ActionMenuState {
+    saved_query: String,
+    actions: Vec<ResultItem>,
+}
+
+fn ask_item(config: &Config, question: &str, model: &str) -> ResultItem {
+    ResultItem::Ask {
+        question: question.to_string(),
+        model: model.to_string(),
+        label: providers::label(&config.ai, model),
+    }
 }
 
 pub struct LauncherState {
     pub apps: AppLauncher,
+    pub scripts: ScriptCatalog,
     pub usage: Usage,
     pub history: History,
     pub emoji_recent: History,
@@ -148,12 +242,20 @@ pub struct LauncherState {
     /// The part of the query that result titles were matched against.
     pub highlight: String,
     pub emoji_mode: bool,
-    /// The conversation with Claude; cleared when the launcher is dismissed.
+    /// The conversation; cleared when the launcher is dismissed.
     pub chat: Vec<Turn>,
+    action_menu: Option<ActionMenuState>,
+    script_cache: Option<(String, String, Result<Vec<ScriptItem>, String>)>,
+    script_loading: Option<(String, String)>,
+    grep_cache: Option<(String, Vec<ContentMatch>)>,
+    grep_loading: Option<String>,
+    /// The directory listing path completion filters, and the one on its way.
+    dir_cache: Option<(PathBuf, Vec<FileEntry>)>,
+    dir_loading: Option<PathBuf>,
     rates: Option<Rates>,
     rates_loading: bool,
     rates_checked: bool,
-    file_index: Option<Rc<Vec<FileEntry>>>,
+    file_index: Option<Arc<Vec<FileEntry>>>,
     file_index_built: Option<Instant>,
     file_index_loading: bool,
     emoji_picker: Option<(String, EmojiPicker)>,
@@ -162,27 +264,44 @@ pub struct LauncherState {
 
 impl LauncherState {
     pub fn new(config: &Config) -> Self {
-        Self::with_stores(
+        let mut s = Self::with_stores(
             Usage::load(),
             History::load(config.behavior.history_size),
             History::load_named("emoji_recent.json", EMOJI_RECENT),
+            ClipboardHistory::load(config.clipboard.size),
             config,
-        )
+        );
+        s.scripts = ScriptCatalog::load();
+        s
     }
 
-    fn with_stores(usage: Usage, history: History, emoji_recent: History, config: &Config) -> Self {
+    fn with_stores(
+        usage: Usage,
+        history: History,
+        emoji_recent: History,
+        clipboard: ClipboardHistory,
+        _config: &Config,
+    ) -> Self {
         Self {
             apps: AppLauncher::empty(),
+            scripts: ScriptCatalog::default(),
             usage,
             history,
             emoji_recent,
-            clipboard: ClipboardHistory::new(config.clipboard.size),
+            clipboard,
             windows: WindowList::NotLoaded,
             results: Vec::new(),
             mode: Mode::Empty,
             highlight: String::new(),
             emoji_mode: false,
             chat: Vec::new(),
+            action_menu: None,
+            script_cache: None,
+            script_loading: None,
+            grep_cache: None,
+            grep_loading: None,
+            dir_cache: None,
+            dir_loading: None,
             rates: None,
             rates_loading: false,
             rates_checked: false,
@@ -200,9 +319,16 @@ impl LauncherState {
         self.results.clear();
         self.emoji_mode = false;
         self.chat.clear();
+        self.action_menu = None;
+        self.script_cache = None;
+        self.script_loading = None;
+        self.grep_cache = None;
+        self.grep_loading = None;
+        self.dir_cache = None;
+        self.dir_loading = None;
     }
 
-    /// True while Claude's conversation is what is shown.
+    /// True while the conversation is what is shown.
     pub fn answer_mode(&self) -> bool {
         matches!(self.results.first(), Some(ResultItem::Transcript { .. }))
     }
@@ -212,14 +338,30 @@ impl LauncherState {
         self.chat.last().is_some_and(|turn| !turn.is_finished())
     }
 
+    /// The model a follow-up goes to: the one that answered last.
+    pub fn chat_model(&self, config: &Config) -> String {
+        self.chat
+            .last()
+            .map(|turn| turn.model.clone())
+            .filter(|model| config.ai.models.contains_key(model))
+            .unwrap_or_else(|| config.ai.default.clone())
+    }
+
     pub fn matcher(&self) -> &Matcher {
         &self.matcher
     }
 
     pub fn set_file_index(&mut self, entries: Vec<FileEntry>) {
-        self.file_index = Some(Rc::new(entries));
+        self.file_index = Some(Arc::new(entries));
         self.file_index_built = Some(Instant::now());
         self.file_index_loading = false;
+        self.grep_cache = None;
+    }
+
+    /// Mark the file index due for a background refresh while keeping the
+    /// current entries available to answer immediately.
+    pub fn invalidate_file_index(&mut self) {
+        self.file_index_built = None;
     }
 
     /// `None` when the download failed; the cached rates, if any, stay.
@@ -230,43 +372,333 @@ impl LauncherState {
         self.rates_loading = false;
     }
 
+    pub fn set_script_results(
+        &mut self,
+        keyword: String,
+        filter: String,
+        outcome: Result<Vec<ScriptItem>, String>,
+    ) {
+        if self.script_loading.as_ref() == Some(&(keyword.clone(), filter.clone())) {
+            self.script_loading = None;
+        }
+        self.script_cache = Some((keyword, filter, outcome));
+    }
+
+    pub fn set_grep_results(&mut self, pattern: String, matches: Vec<ContentMatch>) {
+        if self.grep_loading.as_deref() == Some(pattern.as_str()) {
+            self.grep_loading = None;
+        }
+        self.grep_cache = Some((pattern, matches));
+    }
+
+    pub fn set_dir_listing(&mut self, dir: PathBuf, listing: Vec<FileEntry>) {
+        if self.dir_loading.as_ref() == Some(&dir) {
+            self.dir_loading = None;
+        }
+        self.dir_cache = Some((dir, listing));
+    }
+
+    pub fn remove_window(&mut self, id: &WindowId) {
+        if let WindowList::Loaded(windows) = &mut self.windows {
+            windows.retain(|w| &w.id != id);
+        }
+    }
+
+    pub fn in_action_menu(&self) -> bool {
+        self.action_menu.is_some()
+    }
+
+    #[cfg(test)]
+    pub fn has_actions(item: &ResultItem) -> bool {
+        matches!(
+            item,
+            ResultItem::App(_)
+                | ResultItem::File(_)
+                | ResultItem::Window { .. }
+                | ResultItem::Clipboard(_)
+                | ResultItem::Calc { .. }
+        )
+    }
+
+    /// Open the secondary action menu for `item`, remembering `current_query`
+    /// so Escape returns right back to it.
+    pub fn open_action_menu(&mut self, item: &ResultItem, current_query: &str) -> bool {
+        let act = |title: &str, subtitle: String, icon: &'static str, action: SecondaryAction| {
+            ResultItem::ItemAction {
+                title: title.to_string(),
+                subtitle,
+                icon,
+                action,
+            }
+        };
+
+        let actions: Vec<ResultItem> = match item {
+            ResultItem::App(app) => {
+                let mut list = vec![act(
+                    "Launch",
+                    app.name.clone(),
+                    "media-playback-start-symbolic",
+                    SecondaryAction::LaunchApp(app.clone()),
+                )];
+                for extra in self.apps.actions_for(app) {
+                    let extra_name = extra.name.clone();
+                    list.push(act(
+                        &extra_name,
+                        app.name.clone(),
+                        "window-new-symbolic",
+                        SecondaryAction::LaunchApp(extra),
+                    ));
+                }
+                list.push(act(
+                    "Copy Desktop ID",
+                    app.id.clone(),
+                    "edit-copy-symbolic",
+                    SecondaryAction::CopyText(app.id.clone()),
+                ));
+                list
+            }
+            ResultItem::File(file) => {
+                let folder = if file.is_dir {
+                    file.path.clone()
+                } else {
+                    file.path
+                        .parent()
+                        .map(PathBuf::from)
+                        .unwrap_or_else(|| file.path.clone())
+                };
+                let folder_display = files::tilde_path(&folder);
+                let full_path = file.path.display().to_string();
+                let mut list = vec![act(
+                    "Open",
+                    file.name.clone(),
+                    "document-open-symbolic",
+                    SecondaryAction::OpenFile {
+                        file: file.clone(),
+                        reveal: false,
+                    },
+                )];
+                if !file.is_dir {
+                    list.push(act(
+                        "Open Containing Folder",
+                        folder_display.clone(),
+                        "folder-open-symbolic",
+                        SecondaryAction::OpenFile {
+                            file: file.clone(),
+                            reveal: true,
+                        },
+                    ));
+                }
+                list.push(act(
+                    "Open Terminal Here",
+                    folder_display,
+                    "utilities-terminal-symbolic",
+                    SecondaryAction::OpenTerminalInDir(folder),
+                ));
+                list.push(act(
+                    "Copy Path",
+                    full_path.clone(),
+                    "edit-copy-symbolic",
+                    SecondaryAction::CopyText(full_path),
+                ));
+                list
+            }
+            ResultItem::ContentMatch(m) => {
+                let folder = m
+                    .file
+                    .path
+                    .parent()
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|| m.file.path.clone());
+                let folder_display = files::tilde_path(&folder);
+                let loc = format!("{}:{}", m.file.path.display(), m.line_number);
+                vec![
+                    act(
+                        "Open File",
+                        format!("{}:{}", m.file.name, m.line_number),
+                        "document-open-symbolic",
+                        SecondaryAction::OpenFile {
+                            file: m.file.clone(),
+                            reveal: false,
+                        },
+                    ),
+                    act(
+                        "Open Containing Folder",
+                        folder_display.clone(),
+                        "folder-open-symbolic",
+                        SecondaryAction::OpenFile {
+                            file: m.file.clone(),
+                            reveal: true,
+                        },
+                    ),
+                    act(
+                        "Open Terminal Here",
+                        folder_display,
+                        "utilities-terminal-symbolic",
+                        SecondaryAction::OpenTerminalInDir(folder),
+                    ),
+                    act(
+                        "Copy Matching Line",
+                        m.line_preview.clone(),
+                        "edit-copy-symbolic",
+                        SecondaryAction::CopyText(m.line_preview.clone()),
+                    ),
+                    act(
+                        "Copy Path and Line",
+                        loc.clone(),
+                        "edit-copy-symbolic",
+                        SecondaryAction::CopyText(loc),
+                    ),
+                ]
+            }
+            ResultItem::Window { window, .. } => vec![
+                act(
+                    "Switch to Window",
+                    window.title.clone(),
+                    "focus-windows-symbolic",
+                    SecondaryAction::FocusWindow(window.clone()),
+                ),
+                act(
+                    "Close Window",
+                    format!("{} · {}", window.app_name, window.title),
+                    "window-close-symbolic",
+                    SecondaryAction::CloseWindow(window.clone()),
+                ),
+            ],
+            ResultItem::Clipboard(entry) => {
+                let preview = clipboard::preview(&entry.text);
+                let pin_label = if entry.pinned {
+                    "Unpin Snippet"
+                } else {
+                    "Pin Snippet"
+                };
+                vec![
+                    act(
+                        "Copy",
+                        preview.clone(),
+                        "edit-paste-symbolic",
+                        SecondaryAction::CopyText(entry.text.clone()),
+                    ),
+                    act(
+                        pin_label,
+                        preview.clone(),
+                        "view-pin-symbolic",
+                        SecondaryAction::ToggleClipboardPin(entry.text.clone()),
+                    ),
+                    act(
+                        "Remove from Clipboard History",
+                        preview,
+                        "user-trash-symbolic",
+                        SecondaryAction::RemoveClipboardEntry(entry.text.clone()),
+                    ),
+                ]
+            }
+            ResultItem::Calc {
+                expression, result, ..
+            } => {
+                let full = format!("{} = {}", expression, result);
+                vec![
+                    act(
+                        "Copy Result",
+                        result.clone(),
+                        "edit-copy-symbolic",
+                        SecondaryAction::CopyText(result.clone()),
+                    ),
+                    act(
+                        "Copy Expression and Result",
+                        full.clone(),
+                        "edit-copy-symbolic",
+                        SecondaryAction::CopyText(full),
+                    ),
+                ]
+            }
+            _ => return false,
+        };
+
+        self.action_menu = Some(ActionMenuState {
+            saved_query: current_query.to_string(),
+            actions,
+        });
+        true
+    }
+
+    /// Leave the action menu and return the query that was in the bar before.
+    pub fn close_action_menu(&mut self) -> Option<String> {
+        self.action_menu.take().map(|menu| menu.saved_query)
+    }
+
     /// Recompute `results` for `query` and report which background loads the
     /// caller must start (calling `update` again once they finish).
     pub fn update(&mut self, query: &str, config: &Config) -> Needs {
-        let options = ParseOptions {
-            youtube: config.search.youtube_enabled,
-            chatgpt: config.search.chatgpt_enabled,
-            calculator: config.calculator.enabled,
-            files: config.files.enabled,
-            claude: config.claude.enabled,
-            clipboard: config.clipboard.enabled,
-            aliases: config.aliases.clone(),
-        };
         self.history.set_capacity(config.behavior.history_size);
-        self.clipboard
-            .set_capacity(if config.clipboard.enabled { config.clipboard.size } else { 0 });
+        self.clipboard.set_capacity(if config.clipboard.enabled {
+            config.clipboard.size
+        } else {
+            0
+        });
 
         self.emoji_mode = false;
         self.highlight.clear();
         let mut needs = Needs::default();
 
+        if let Some(menu) = &self.action_menu {
+            let filter = query.trim().to_lowercase();
+            let items: Vec<ResultItem> = if filter.is_empty() {
+                menu.actions.clone()
+            } else {
+                menu.actions
+                    .iter()
+                    .filter(|item| match item {
+                        ResultItem::ItemAction {
+                            title, subtitle, ..
+                        } => {
+                            self.matcher.score(&filter, &title.to_lowercase()).is_some()
+                                || subtitle.to_lowercase().contains(&filter)
+                        }
+                        _ => false,
+                    })
+                    .cloned()
+                    .collect()
+            };
+            self.highlight = query.trim().to_string();
+            self.mode = Mode::Actions;
+            self.results = if items.is_empty() {
+                vec![ResultItem::Info("No matching actions".to_string())]
+            } else {
+                items
+            };
+            return needs;
+        }
+
+        let options = ParseOptions {
+            youtube: config.search.youtube_enabled,
+            chatgpt: config.search.chatgpt_enabled,
+            calculator: config.calculator.enabled,
+            files: config.files.enabled,
+            ai: config.ai.enabled,
+            clipboard: config.clipboard.enabled,
+            aliases: config.aliases.clone(),
+            scripts: self.scripts.keywords(),
+            models: config.ai.models.keys().cloned().collect(),
+        };
+
         // A conversation takes over the bar: whatever is typed next is a
-        // follow-up, with or without a question mark.
-        if !self.chat.is_empty() && config.claude.enabled {
+        // follow-up, with or without a question mark. It goes to the model
+        // that answered last, unless it starts with another model's name.
+        if !self.chat.is_empty() && config.ai.enabled {
             let mut items = vec![ResultItem::Transcript {
                 turns: self.chat.clone(),
-                model: config.claude.model.clone(),
             }];
             let question = query.trim();
             if !question.is_empty() {
-                items.push(ResultItem::Ask {
-                    question: question.to_string(),
-                    model: config.claude.model.clone(),
-                });
+                let (model, question) = match query::model_prefix(question, &options.models) {
+                    Some((model, rest)) => (model.to_string(), rest),
+                    None => (self.chat_model(config), question),
+                };
+                items.push(ask_item(config, question, &model));
             }
-            self.mode = Mode::Claude;
+            self.mode = Mode::Ai;
             self.results = items;
-            needs.claude = true;
+            needs.ai = true;
             return needs;
         }
 
@@ -279,15 +711,10 @@ impl LauncherState {
                     .map(|app| ResultItem::App(app.clone()))
                     .collect(),
             ),
-            Intent::Ask(question) => {
-                needs.claude = true;
-                (
-                    Mode::Claude,
-                    vec![ResultItem::Ask {
-                        question,
-                        model: config.claude.model.clone(),
-                    }],
-                )
+            Intent::Ask { question, model } => {
+                needs.ai = true;
+                let model = model.unwrap_or_else(|| config.ai.default.clone());
+                (Mode::Ai, vec![ask_item(config, &question, &model)])
             }
             Intent::Settings => (Mode::Settings, vec![ResultItem::Settings]),
             Intent::Windows(filter) => {
@@ -306,28 +733,51 @@ impl LauncherState {
                 self.emoji_mode = true;
                 let tone = config.emoji.skin_tone.clone();
                 if self.emoji_picker.as_ref().map(|(key, _)| key.as_str()) != Some(tone.as_str()) {
-                    self.emoji_picker =
-                        Some((tone.clone(), EmojiPicker::new(emoji_picker::skin_tone(&tone))));
+                    self.emoji_picker = Some((
+                        tone.clone(),
+                        EmojiPicker::new(emoji_picker::skin_tone(&tone)),
+                    ));
                 }
                 let items = self
                     .emoji_picker
                     .as_ref()
-                    .map(|(_, picker)| picker.search(&filter, self.emoji_recent.entries(), EMOJI_LIMIT))
+                    .map(|(_, picker)| {
+                        picker.search(&filter, self.emoji_recent.entries(), EMOJI_LIMIT)
+                    })
                     .unwrap_or_default()
                     .into_iter()
                     .map(ResultItem::Emoji)
                     .collect();
                 (Mode::Emoji, items)
             }
-            Intent::Calc { expression, result } => {
-                (Mode::Calculator, vec![ResultItem::Calc { expression, result }])
-            }
+            Intent::Calc {
+                expression,
+                result,
+                swatch,
+            } => (
+                Mode::Calculator,
+                vec![ResultItem::Calc {
+                    expression,
+                    result,
+                    swatch,
+                }],
+            ),
             Intent::Convert(request) => {
                 let expression = query.trim().to_string();
                 if let Some(result) = units::convert(&request) {
-                    (Mode::Calculator, vec![ResultItem::Calc { expression, result }])
+                    (
+                        Mode::Calculator,
+                        vec![ResultItem::Calc {
+                            expression,
+                            result,
+                            swatch: None,
+                        }],
+                    )
                 } else if config.calculator.currency && units::looks_like_currency(&request) {
-                    (Mode::Calculator, self.currency_results(&request, expression, &mut needs))
+                    (
+                        Mode::Calculator,
+                        self.currency_results(&request, expression, &mut needs),
+                    )
                 } else {
                     // Not a conversion we know: treat it like any other text.
                     self.highlight = expression.clone();
@@ -348,15 +798,20 @@ impl LauncherState {
                 self.highlight = filter;
                 (Mode::Files, items)
             }
-            Intent::Path(path) => {
-                let entries = files::complete_path(&path, RESULT_LIMIT);
-                let items = if entries.is_empty() {
-                    vec![ResultItem::Info("No such file or directory".to_string())]
-                } else {
-                    entries.into_iter().map(ResultItem::File).collect()
-                };
+            Intent::Grep(pattern) => {
+                let stale = self
+                    .file_index_built
+                    .map(|built| built.elapsed() > FILE_INDEX_MAX_AGE)
+                    .unwrap_or(true);
+                if stale && !self.file_index_loading {
+                    self.file_index_loading = true;
+                    needs.files = true;
+                }
+                let items = self.grep_results(&pattern, &mut needs);
+                self.highlight = pattern;
                 (Mode::Files, items)
             }
+            Intent::Path(path) => (Mode::Files, self.path_results(&path, &mut needs)),
             Intent::History(filter) => (Mode::History, self.history_results(&filter)),
             Intent::Clipboard(filter) => {
                 let found = self.clipboard.search(&filter, RESULT_LIMIT);
@@ -368,6 +823,7 @@ impl LauncherState {
                     };
                     vec![ResultItem::Info(message.to_string())]
                 } else {
+                    self.highlight = filter;
                     found.into_iter().map(ResultItem::Clipboard).collect()
                 };
                 (Mode::Clipboard, items)
@@ -383,6 +839,10 @@ impl LauncherState {
                     name,
                 }],
             ),
+            Intent::Script { keyword, args } => {
+                let items = self.script_results(&keyword, &args, &mut needs);
+                (Mode::Script, items)
+            }
             Intent::Apps(query) => {
                 let items = self.app_results(&query, config);
                 self.highlight = query;
@@ -415,6 +875,7 @@ impl LauncherState {
                 Some(result) => vec![ResultItem::Calc {
                     expression: format!("{}  ·  ECB rate of {}", expression, rates.date),
                     result,
+                    swatch: None,
                 }],
                 None => vec![ResultItem::Info("Unknown currency".to_string())],
             },
@@ -425,6 +886,50 @@ impl LauncherState {
                 "Exchange rates are not available right now".to_string(),
             )],
         }
+    }
+
+    fn script_results(&mut self, keyword: &str, args: &str, needs: &mut Needs) -> Vec<ResultItem> {
+        let Some(script) = self.scripts.by_keyword(keyword).cloned() else {
+            return vec![ResultItem::Info("Script not found".to_string())];
+        };
+        if script.mode == ScriptMode::Action {
+            return vec![ResultItem::ScriptRun {
+                script,
+                args: args.to_string(),
+            }];
+        }
+
+        let key = (keyword.to_string(), args.to_string());
+        if let Some((cached_kw, cached_args, outcome)) = &self.script_cache {
+            if cached_kw == keyword && cached_args == args {
+                return match outcome {
+                    Ok(items) if items.is_empty() => {
+                        vec![ResultItem::Info("No matching script results".to_string())]
+                    }
+                    Ok(items) => items
+                        .iter()
+                        .cloned()
+                        .map(ResultItem::ScriptOutput)
+                        .collect(),
+                    Err(error) => vec![ResultItem::Info(error.clone())],
+                };
+            }
+        }
+        if self.script_loading.as_ref() != Some(&key) {
+            self.script_loading = Some(key);
+            needs.script = Some((script.clone(), args.to_string()));
+        }
+        // Keep showing the most recent rows from the same script while the new filter runs.
+        if let Some((cached_kw, _, Ok(items))) = &self.script_cache {
+            if cached_kw == keyword && !items.is_empty() {
+                return items
+                    .iter()
+                    .cloned()
+                    .map(ResultItem::ScriptOutput)
+                    .collect();
+            }
+        }
+        vec![ResultItem::Info(format!("Running {}…", script.name))]
     }
 
     fn window_results(&self, filter: &str) -> Vec<ResultItem> {
@@ -474,6 +979,57 @@ impl LauncherState {
             .into_iter()
             .map(|entry| ResultItem::File(entry.clone()))
             .collect()
+    }
+
+    fn grep_results(&mut self, pattern: &str, needs: &mut Needs) -> Vec<ResultItem> {
+        if pattern.chars().count() < MIN_GREP_QUERY {
+            return vec![ResultItem::Info(format!(
+                "Type at least {} characters to search file contents",
+                MIN_GREP_QUERY
+            ))];
+        }
+        let Some(index) = &self.file_index else {
+            return vec![ResultItem::Info("Indexing files…".to_string())];
+        };
+        if let Some((cached_pat, matches)) = &self.grep_cache {
+            if cached_pat == pattern {
+                return if matches.is_empty() {
+                    vec![ResultItem::Info("No matching text in files".to_string())]
+                } else {
+                    matches
+                        .iter()
+                        .cloned()
+                        .map(ResultItem::ContentMatch)
+                        .collect()
+                };
+            }
+        }
+        if self.grep_loading.as_deref() != Some(pattern) {
+            self.grep_loading = Some(pattern.to_string());
+            needs.grep = Some((pattern.to_string(), index.clone()));
+        }
+        vec![ResultItem::Info("Searching file contents…".to_string())]
+    }
+
+    /// Completions for a typed path. The directory is read on a worker thread
+    /// (it can hang on network mounts); typing within it filters the cache.
+    fn path_results(&mut self, input: &str, needs: &mut Needs) -> Vec<ResultItem> {
+        let (dir, partial) = files::split_path_input(input);
+        if let Some((cached, listing)) = &self.dir_cache {
+            if *cached == dir {
+                let entries = files::filter_listing(listing, &partial, RESULT_LIMIT);
+                return if entries.is_empty() {
+                    vec![ResultItem::Info("No such file or directory".to_string())]
+                } else {
+                    entries.into_iter().map(ResultItem::File).collect()
+                };
+            }
+        }
+        if self.dir_loading.as_ref() != Some(&dir) {
+            self.dir_loading = Some(dir.clone());
+            needs.dir = Some(dir);
+        }
+        vec![ResultItem::Info("Reading folder…".to_string())]
     }
 
     fn history_results(&self, filter: &str) -> Vec<ResultItem> {
@@ -545,6 +1101,14 @@ impl LauncherState {
             }
         }
 
+        // User scripts whose name or description match appear alongside apps.
+        for script in self.scripts.search(&self.matcher, query) {
+            items.push(ResultItem::ScriptRun {
+                script: script.clone(),
+                args: String::new(),
+            });
+        }
+
         // "settings", "poppi", "launcher"... also offer our own settings.
         if query.len() >= 3 && "poppi launcher settings".contains(&query.to_lowercase()) {
             items.push(ResultItem::Settings);
@@ -579,8 +1143,44 @@ mod tests {
             Usage::load_from(None),
             History::load_from(None, 50),
             History::load_from(None, EMOJI_RECENT),
+            ClipboardHistory::new(30),
             &Config::default(),
         )
+    }
+
+    #[test]
+    fn typed_paths_list_the_folder_once_then_filter_the_cache() {
+        let dir = std::env::temp_dir().join(format!("poppi-state-path-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("docs")).unwrap();
+        std::fs::write(dir.join("deploy.sh"), "").unwrap();
+        std::fs::write(dir.join("notes.txt"), "").unwrap();
+        let root = dir.to_string_lossy().into_owned();
+        let config = Config::default();
+        let mut s = state();
+
+        // Nothing is read on the UI thread: the folder is requested instead.
+        let needs = s.update(&format!("{}/d", root), &config);
+        assert_eq!(needs.dir.as_deref(), Some(dir.as_path()));
+        assert!(matches!(&s.results[..], [ResultItem::Info(_)]));
+        // Typing on before it arrives doesn't ask again.
+        assert_eq!(s.update(&format!("{}/de", root), &config).dir, None);
+
+        s.set_dir_listing(dir.clone(), files::list_dir(&dir));
+        assert_eq!(s.update(&format!("{}/d", root), &config).dir, None);
+        let names: Vec<&str> = s
+            .results
+            .iter()
+            .filter_map(|item| match item {
+                ResultItem::File(f) => Some(f.name.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(names, vec!["docs", "deploy.sh"]);
+
+        // Another folder is a new request.
+        let sub = dir.join("docs");
+        assert_eq!(s.update(&format!("{}/docs/", root), &config).dir, Some(sub));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
@@ -598,9 +1198,18 @@ mod tests {
         assert!(matches!(
             s.results.as_slice(),
             [
-                ResultItem::Search { engine: Engine::Google, .. },
-                ResultItem::Search { engine: Engine::Youtube, .. },
-                ResultItem::Search { engine: Engine::Chatgpt, .. },
+                ResultItem::Search {
+                    engine: Engine::Google,
+                    ..
+                },
+                ResultItem::Search {
+                    engine: Engine::Youtube,
+                    ..
+                },
+                ResultItem::Search {
+                    engine: Engine::Chatgpt,
+                    ..
+                },
             ]
         ));
         assert_eq!(s.mode, Mode::Apps);
@@ -674,11 +1283,20 @@ mod tests {
         let config = Config::default();
 
         s.update("lock", &config);
-        assert!(matches!(s.results[0], ResultItem::System(SystemAction::Lock)));
+        assert!(matches!(
+            s.results[0],
+            ResultItem::System(SystemAction::Lock)
+        ));
         s.update("reb", &config);
-        assert!(s.results.iter().any(|r| matches!(r, ResultItem::System(SystemAction::Restart))));
+        assert!(s
+            .results
+            .iter()
+            .any(|r| matches!(r, ResultItem::System(SystemAction::Restart))));
         s.update("shutdown", &config);
-        assert!(matches!(s.results[0], ResultItem::System(SystemAction::PowerOff)));
+        assert!(matches!(
+            s.results[0],
+            ResultItem::System(SystemAction::PowerOff)
+        ));
 
         // Not on a substring, and not for very short input.
         s.update("clock", &config);
@@ -709,7 +1327,7 @@ mod tests {
         s.update("100 usd in eur", &config);
         assert!(matches!(
             &s.results[0],
-            ResultItem::Calc { result, expression } if result == "80.00 EUR" && expression.contains("2026-11-10")
+            ResultItem::Calc { result, expression, .. } if result == "80.00 EUR" && expression.contains("2026-11-10")
         ));
         s.update("100 usd in zzz", &config);
         assert!(matches!(&s.results[0], ResultItem::Info(m) if m == "Unknown currency"));
@@ -780,7 +1398,7 @@ mod tests {
         s.update("clip", &config);
         assert!(matches!(
             s.results.as_slice(),
-            [ResultItem::Clipboard(a), ResultItem::Clipboard(b)] if a == "hello" && b == "https://example.com"
+            [ResultItem::Clipboard(a), ResultItem::Clipboard(b)] if a.text == "hello" && b.text == "https://example.com"
         ));
         s.update("clip http", &config);
         assert_eq!(s.results.len(), 1);
@@ -814,10 +1432,11 @@ mod tests {
 
         // First question: just the offer, and a request to warm up the CLI.
         let needs = s.update("what is rust?", &config);
-        assert!(needs.claude);
+        assert!(needs.ai);
         assert!(matches!(
             s.results.as_slice(),
-            [ResultItem::Ask { question, model }] if question == "what is rust?" && model == "haiku"
+            [ResultItem::Ask { question, model, label }]
+                if question == "what is rust?" && model == "haiku" && label == "Claude Haiku"
         ));
         assert!(!s.answer_mode());
 
@@ -827,22 +1446,41 @@ mod tests {
             question: "what is rust?".into(),
             text: "A language.".into(),
             status: TurnStatus::Thinking,
+            model: "sonnet".into(),
+            label: "Claude Sonnet".into(),
         });
         assert!(s.chat_busy());
         s.chat[0].status = TurnStatus::Done;
         assert!(!s.chat_busy());
         s.update("", &config);
-        assert!(matches!(s.results.as_slice(), [ResultItem::Transcript { turns, .. }] if turns.len() == 1));
+        assert!(
+            matches!(s.results.as_slice(), [ResultItem::Transcript { turns, .. }] if turns.len() == 1)
+        );
         assert!(s.answer_mode());
-        assert_eq!(s.mode, Mode::Claude);
+        assert_eq!(s.mode, Mode::Ai);
 
-        // Anything typed now is a follow-up, question mark or not.
+        // Anything typed now is a follow-up, question mark or not, for the
+        // model that answered last...
         let needs = s.update("and go", &config);
-        assert!(needs.claude);
+        assert!(needs.ai);
         assert!(matches!(
             s.results.as_slice(),
-            [ResultItem::Transcript { .. }, ResultItem::Ask { question, .. }] if question == "and go"
+            [ResultItem::Transcript { .. }, ResultItem::Ask { question, model, .. }]
+                if question == "and go" && model == "sonnet"
         ));
+        // ...unless it names another one.
+        s.update("opus and go", &config);
+        assert!(matches!(
+            &s.results[1],
+            ResultItem::Ask { question, model, .. } if question == "and go" && model == "opus"
+        ));
+        assert_eq!(
+            chat_history(&s.chat),
+            [
+                ai::Message::user("what is rust?"),
+                ai::Message::assistant("A language.")
+            ]
+        );
         s.update("firefox", &config);
         assert!(s.answer_mode());
 
@@ -856,9 +1494,37 @@ mod tests {
         s.chat.push(Turn {
             question: "x".into(),
             text: String::new(),
-            status: TurnStatus::Done,
+            status: TurnStatus::Failed,
+            model: "haiku".into(),
+            label: "Claude Haiku".into(),
         });
+        assert!(chat_history(&s.chat).is_empty());
         s.reset_session();
         assert!(s.chat.is_empty());
+    }
+
+    #[test]
+    fn action_menu_opens_filters_and_restores_query() {
+        let mut s = state();
+        let config = Config::default();
+        s.update("#4a9eff", &config);
+        let calc = s.results[0].clone();
+        assert!(LauncherState::has_actions(&calc));
+
+        assert!(s.open_action_menu(&calc, "#4a9eff"));
+        assert!(s.in_action_menu());
+        s.update("", &config);
+        assert_eq!(s.mode, Mode::Actions);
+        assert_eq!(s.results.len(), 2);
+
+        s.update("expression", &config);
+        assert_eq!(s.results.len(), 1);
+        assert!(matches!(
+            &s.results[0],
+            ResultItem::ItemAction { title, .. } if title == "Copy Expression and Result"
+        ));
+
+        assert_eq!(s.close_action_menu().as_deref(), Some("#4a9eff"));
+        assert!(!s.in_action_menu());
     }
 }

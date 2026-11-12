@@ -1,4 +1,4 @@
-//! Ask Claude questions through the Claude Code CLI.
+//! Claude through the Claude Code CLI.
 //!
 //! This deliberately has no API key handling: it runs `claude -p`, which uses
 //! whatever account the CLI is logged in with (a Pro/Max subscription after
@@ -11,47 +11,30 @@
 //! The process runs with no tools, no MCP servers and no session
 //! persistence: it can only answer in text.
 
-use crate::config::ClaudeConfig;
-use crate::utils;
+use super::{resolve_command, working_dir, Event};
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Read, Write};
-use std::path::PathBuf;
 use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::mpsc::{self, Receiver};
+use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
 
-#[derive(Debug, Clone, PartialEq)]
-pub enum Event {
-    /// A piece of the answer as it streams in.
-    Delta(String),
-    /// The request finished; carries the complete answer.
-    Done(String),
-    Failed(String),
-}
-
-/// A running conversation. Dropping it kills the process.
-pub struct Session {
-    events: Receiver<Event>,
+/// A running CLI process. Dropping it kills the process.
+pub struct Process {
     child: Arc<Mutex<Option<Child>>>,
     stdin: Option<ChildStdin>,
 }
 
-impl Session {
-    /// Put a question to Claude. The answer arrives through `poll`.
-    pub fn send(&mut self, question: &str) -> Result<(), String> {
+impl Process {
+    /// Put a message to Claude. The answer arrives on the event channel.
+    pub fn send(&mut self, text: &str) -> Result<(), String> {
         let stdin = self.stdin.as_mut().ok_or("Claude is not running")?;
-        writeln!(stdin, "{}", user_message(question))
+        writeln!(stdin, "{}", user_message(text))
             .and_then(|()| stdin.flush())
             .map_err(|e| format!("Could not reach Claude: {}", e))
     }
-
-    /// Events that have arrived since the last call, without blocking.
-    pub fn poll(&self) -> Vec<Event> {
-        self.events.try_iter().collect()
-    }
 }
 
-impl Drop for Session {
+impl Drop for Process {
     fn drop(&mut self) {
         // Closing stdin asks the CLI to finish; killing makes sure it does.
         self.stdin.take();
@@ -71,24 +54,7 @@ pub fn user_message(question: &str) -> String {
     .to_string()
 }
 
-/// Find the CLI. A launcher started from a desktop shortcut often has a
-/// shorter `$PATH` than a terminal, so the usual install locations are tried.
-fn resolve_command(command: &str) -> Option<PathBuf> {
-    if let Some(path) = utils::find_in_path(command) {
-        return Some(path);
-    }
-    if command.contains('/') {
-        return None;
-    }
-    let home = dirs::home_dir()?;
-    [".local/bin", ".claude/local", ".npm-global/bin", "bin"]
-        .iter()
-        .map(|dir| home.join(dir).join(command))
-        .chain([PathBuf::from("/usr/local/bin").join(command)])
-        .find(|candidate| utils::is_executable(candidate))
-}
-
-pub fn build_args(config: &ClaudeConfig) -> Vec<String> {
+pub fn build_args(model: &str, system_prompt: &str) -> Vec<String> {
     let mut args: Vec<String> = [
         "--print",
         "--input-format",
@@ -106,9 +72,11 @@ pub fn build_args(config: &ClaudeConfig) -> Vec<String> {
     ]
     .map(String::from)
     .to_vec();
-    args.extend(["--model".to_string(), config.model.clone()]);
-    if !config.system_prompt.trim().is_empty() {
-        args.extend(["--system-prompt".to_string(), config.system_prompt.clone()]);
+    if !model.trim().is_empty() {
+        args.extend(["--model".to_string(), model.trim().to_string()]);
+    }
+    if !system_prompt.trim().is_empty() {
+        args.extend(["--system-prompt".to_string(), system_prompt.to_string()]);
     }
     args
 }
@@ -158,31 +126,25 @@ pub fn parse_line(line: &str) -> Option<Event> {
     }
 }
 
-/// A neutral, empty working directory, so the CLI does not pick up a
-/// project's CLAUDE.md or settings from wherever the launcher was started.
-fn working_dir() -> PathBuf {
-    let dir = dirs::cache_dir()
-        .unwrap_or_else(std::env::temp_dir)
-        .join("poppi_launcher")
-        .join("claude");
-    let _ = std::fs::create_dir_all(&dir);
-    dir
-}
-
-impl Session {
+impl Process {
     /// Start the CLI. Nothing is sent to Claude until `send` is called, so
     /// this can run ahead of time to hide the start-up delay.
-    pub fn start(config: &ClaudeConfig) -> Result<Session, String> {
-        let program = resolve_command(&config.command).ok_or_else(|| {
+    pub fn start(
+        program: &str,
+        model: &str,
+        system_prompt: &str,
+        sender: Sender<Event>,
+    ) -> Result<Process, String> {
+        let path = resolve_command(program).ok_or_else(|| {
             format!(
                 "Could not find `{}`. Install Claude Code and run `claude` once to log in.",
-                config.command
+                program
             )
         })?;
 
-        let mut command = Command::new(program);
+        let mut command = Command::new(path);
         command
-            .args(build_args(config))
+            .args(build_args(model, system_prompt))
             .current_dir(working_dir())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -207,7 +169,6 @@ impl Session {
         let stdout = child.stdout.take();
         let stderr = child.stderr.take();
         let child = Arc::new(Mutex::new(Some(child)));
-        let (sender, events) = mpsc::channel();
 
         let child_for_thread = child.clone();
         std::thread::spawn(move || {
@@ -252,11 +213,7 @@ impl Session {
             }
         });
 
-        Ok(Session {
-            events,
-            child,
-            stdin,
-        })
+        Ok(Process { child, stdin })
     }
 }
 
@@ -267,7 +224,10 @@ mod tests {
     #[test]
     fn text_deltas_are_streamed() {
         let line = r#"{"type":"stream_event","event":{"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"The capital of Sl"}}}"#;
-        assert_eq!(parse_line(line), Some(Event::Delta("The capital of Sl".into())));
+        assert_eq!(
+            parse_line(line),
+            Some(Event::Delta("The capital of Sl".into()))
+        );
     }
 
     #[test]
@@ -287,11 +247,16 @@ mod tests {
 
     #[test]
     fn result_lines_finish_the_request() {
-        let ok = r#"{"type":"result","subtype":"success","is_error":false,"result":"Ljubljana.\n"}"#;
+        let ok =
+            r#"{"type":"result","subtype":"success","is_error":false,"result":"Ljubljana.\n"}"#;
         assert_eq!(parse_line(ok), Some(Event::Done("Ljubljana.".into())));
 
-        let failed = r#"{"type":"result","subtype":"success","is_error":true,"result":"Please run /login"}"#;
-        assert_eq!(parse_line(failed), Some(Event::Failed("Please run /login".into())));
+        let failed =
+            r#"{"type":"result","subtype":"success","is_error":true,"result":"Please run /login"}"#;
+        assert_eq!(
+            parse_line(failed),
+            Some(Event::Failed("Please run /login".into()))
+        );
 
         let bare = r#"{"type":"result","subtype":"error_during_execution","is_error":true}"#;
         assert_eq!(
@@ -302,8 +267,7 @@ mod tests {
 
     #[test]
     fn arguments_disable_tools_and_use_the_streaming_protocol() {
-        let config = ClaudeConfig::default();
-        let args = build_args(&config);
+        let args = build_args("haiku", "be brief");
         let position = |flag: &str| args.iter().position(|a| a == flag).unwrap();
 
         assert_eq!(args[position("--tools") + 1], "");
@@ -324,44 +288,9 @@ mod tests {
         assert_eq!(value["message"]["content"], "say \"hi\"\nplease --now");
     }
 
-    /// Manual check that really asks Claude (two small requests on the
-    /// logged-in account): `cargo test -- --ignored --nocapture asks_claude`
-    #[test]
-    #[ignore = "needs a logged-in Claude Code CLI and network access"]
-    fn asks_claude_for_real_and_remembers_context() {
-        fn answer(session: &Session) -> String {
-            let started = std::time::Instant::now();
-            let mut deltas = String::new();
-            loop {
-                for event in session.poll() {
-                    match event {
-                        Event::Delta(text) => deltas.push_str(&text),
-                        Event::Done(answer) => {
-                            println!("answer {:?} after {:?}", answer, started.elapsed());
-                            assert_eq!(deltas.trim(), answer);
-                            return answer;
-                        }
-                        Event::Failed(error) => panic!("request failed: {}", error),
-                    }
-                }
-                assert!(started.elapsed().as_secs() < 60, "timed out");
-                std::thread::sleep(std::time::Duration::from_millis(20));
-            }
-        }
-
-        let mut session = Session::start(&ClaudeConfig::default()).expect("could not start the CLI");
-        session.send("My favourite number is 41. Reply with just: ok").unwrap();
-        answer(&session);
-        session.send("What is my favourite number plus one? Reply with the number only.").unwrap();
-        assert!(answer(&session).contains("42"));
-    }
-
     #[test]
     fn empty_system_prompt_is_omitted() {
-        let config = ClaudeConfig {
-            system_prompt: "  ".to_string(),
-            ..ClaudeConfig::default()
-        };
-        assert!(!build_args(&config).contains(&"--system-prompt".to_string()));
+        assert!(!build_args("haiku", "  ").contains(&"--system-prompt".to_string()));
+        assert!(!build_args("", "").contains(&"--model".to_string()));
     }
 }

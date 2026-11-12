@@ -13,7 +13,11 @@ pub struct Config {
     pub search: SearchConfig,
     pub calculator: CalculatorConfig,
     pub files: FilesConfig,
-    pub claude: ClaudeConfig,
+    pub ai: AiConfig,
+    /// The `[claude]` section of earlier versions; read once and migrated
+    /// into `[ai]`, never written back.
+    #[serde(skip_serializing)]
+    pub claude: Option<LegacyClaudeConfig>,
     pub clipboard: ClipboardConfig,
     pub emoji: EmojiConfig,
     /// Keyword -> URL or command. `{}` is replaced by the typed arguments.
@@ -115,6 +119,8 @@ pub struct FilesConfig {
     /// How many directory levels below each root are indexed.
     pub max_depth: usize,
     pub include_hidden: bool,
+    /// Skip files and folders matched by `.gitignore` files.
+    pub respect_gitignore: bool,
     /// Directory or file names that are skipped entirely.
     pub exclude: Vec<String>,
 }
@@ -165,32 +171,103 @@ impl Default for CalculatorConfig {
     }
 }
 
-/// Questions (anything ending in `?`) are answered through the Claude Code
-/// CLI, using the account it is logged in with. There is no API key setting.
+/// The default instructions given to every model.
+pub const DEFAULT_SYSTEM_PROMPT: &str = "You answer questions inside a small desktop launcher. \
+    Be brief: usually one to three sentences, more only when asked. \
+    Light markdown is rendered: `code`, **bold**, short bullet lists \
+    and fenced code blocks. No headings or tables.";
+
+/// Questions (anything ending in `?`, or after `ask `) go to the default
+/// model; `<name> question` picks another one by its name.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
-pub struct ClaudeConfig {
+pub struct AiConfig {
     pub enabled: bool,
-    /// Model alias or full name passed to `claude --model`.
-    pub model: String,
-    /// The Claude Code executable.
-    pub command: String,
+    /// Name of the entry in `models` that answers plain questions.
+    pub default: String,
     pub system_prompt: String,
+    /// Name (also the prefix you type) -> model.
+    pub models: BTreeMap<String, ModelConfig>,
 }
 
-impl Default for ClaudeConfig {
-    fn default() -> Self {
+/// One model you can ask. Only `provider` is required; everything else
+/// falls back to the provider's defaults (see `ai::providers`).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ModelConfig {
+    /// `claude`, `gemini-cli`, `codex`, `ollama`, `openai`, `anthropic`,
+    /// `gemini`, `openrouter`, ... or `openai-compatible` / `command`.
+    pub provider: String,
+    /// Model id as the provider names it. Empty: the provider's default.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub model: String,
+    /// Shown in the launcher instead of the generated name.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub label: String,
+    /// API endpoint, for `openai-compatible` or to override a provider's.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub base_url: String,
+    /// Environment variable holding the API key, overriding the provider's
+    /// usual one (`OPENAI_API_KEY`, ...).
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub api_key_env: String,
+    /// An API key in plain text. Prefer the keyring (settings window) or an
+    /// environment variable; this is for setups without either.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub api_key: String,
+    /// The program for CLI providers, or the shell command for `command`.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub command: String,
+}
+
+impl ModelConfig {
+    pub fn new(provider: &str, model: &str) -> Self {
         Self {
-            enabled: true,
-            model: "haiku".to_string(),
-            command: "claude".to_string(),
-            system_prompt: "You answer questions inside a small desktop launcher. \
-                            Be brief: usually one to three sentences, more only when asked. \
-                            Light markdown is rendered: `code`, **bold**, short bullet lists \
-                            and fenced code blocks. No headings or tables."
-                .to_string(),
+            provider: provider.to_string(),
+            model: model.to_string(),
+            ..Self::default()
         }
     }
+}
+
+impl Default for AiConfig {
+    fn default() -> Self {
+        let models = [
+            ("haiku", ModelConfig::new("claude", "haiku")),
+            ("sonnet", ModelConfig::new("claude", "sonnet")),
+            ("opus", ModelConfig::new("claude", "opus")),
+            ("gemini", ModelConfig::new("gemini-cli", "")),
+            ("codex", ModelConfig::new("codex", "")),
+            ("llama", ModelConfig::new("ollama", "llama3.2")),
+        ]
+        .into_iter()
+        .map(|(name, model)| (name.to_string(), model))
+        .collect();
+        Self {
+            enabled: true,
+            default: "haiku".to_string(),
+            system_prompt: DEFAULT_SYSTEM_PROMPT.to_string(),
+            models,
+        }
+    }
+}
+
+/// `[claude]` from version 0.2.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[serde(default)]
+pub struct LegacyClaudeConfig {
+    pub enabled: Option<bool>,
+    pub model: Option<String>,
+    pub command: Option<String>,
+    pub system_prompt: Option<String>,
+}
+
+/// A model name is typed as the first word, so it must be one word.
+pub fn is_valid_model_name(name: &str) -> bool {
+    !name.is_empty()
+        && name
+            .chars()
+            .all(|c| c.is_alphanumeric() || c == '-' || c == '_' || c == '.')
 }
 
 impl Default for FilesConfig {
@@ -200,6 +277,7 @@ impl Default for FilesConfig {
             roots: vec!["~".to_string()],
             max_depth: 6,
             include_hidden: false,
+            respect_gitignore: true,
             exclude: ["node_modules", "target", "__pycache__", "venv", "snap"]
                 .map(String::from)
                 .to_vec(),
@@ -237,17 +315,70 @@ impl Config {
             self.theme.mode = "dark".to_string();
         }
         self.files.max_depth = self.files.max_depth.clamp(1, 12);
-        let defaults = ClaudeConfig::default();
-        if self.claude.model.trim().is_empty() {
-            self.claude.model = defaults.model;
+        self.migrate_claude_section();
+        self.ai
+            .models
+            .retain(|name, model| is_valid_model_name(name) && !model.provider.trim().is_empty());
+        if self.ai.models.is_empty() {
+            self.ai.models = AiConfig::default().models;
         }
-        if self.claude.command.trim().is_empty() {
-            self.claude.command = defaults.command;
+        if !self.ai.models.contains_key(&self.ai.default) {
+            self.ai.default = if self.ai.models.contains_key("haiku") {
+                "haiku".to_string()
+            } else {
+                self.ai.models.keys().next().cloned().unwrap_or_default()
+            };
         }
         // An alias is matched against the first typed word.
-        self.aliases
-            .retain(|name, target| !name.is_empty() && !name.contains(char::is_whitespace) && !target.trim().is_empty());
+        self.aliases.retain(|name, target| {
+            !name.is_empty() && !name.contains(char::is_whitespace) && !target.trim().is_empty()
+        });
         self
+    }
+
+    /// Carry settings from a `[claude]` section over to `[ai]`.
+    fn migrate_claude_section(&mut self) {
+        let Some(old) = self.claude.take() else {
+            return;
+        };
+        if let Some(enabled) = old.enabled {
+            self.ai.enabled = enabled;
+        }
+        if let Some(prompt) = old.system_prompt.filter(|p| !p.trim().is_empty()) {
+            self.ai.system_prompt = prompt;
+        }
+        let model = old
+            .model
+            .map(|m| m.trim().to_string())
+            .filter(|m| !m.is_empty());
+        let command = old
+            .command
+            .map(|c| c.trim().to_string())
+            .filter(|c| !c.is_empty() && c != "claude");
+        if let Some(command) = &command {
+            for entry in self
+                .ai
+                .models
+                .values_mut()
+                .filter(|m| m.provider == "claude")
+            {
+                entry.command = command.clone();
+            }
+        }
+        if let Some(model) = model {
+            let existing = self
+                .ai
+                .models
+                .iter()
+                .find(|(_, m)| m.provider == "claude" && m.model == model)
+                .map(|(name, _)| name.clone());
+            self.ai.default = existing.unwrap_or_else(|| {
+                let mut entry = ModelConfig::new("claude", &model);
+                entry.command = command.clone().unwrap_or_default();
+                self.ai.models.insert("claude".to_string(), entry);
+                "claude".to_string()
+            });
+        }
     }
 
     /// Load the config. A missing file is created with defaults. A file that
@@ -297,7 +428,19 @@ impl Config {
             fs::create_dir_all(parent).map_err(|e| e.to_string())?;
         }
         let contents = toml::to_string(self).map_err(|e| e.to_string())?;
-        fs::write(&path, contents).map_err(|e| e.to_string())
+        fs::write(&path, contents).map_err(|e| e.to_string())?;
+        // A key written into the file is for this user's eyes only.
+        if self
+            .ai
+            .models
+            .values()
+            .any(|m| !m.api_key.trim().is_empty())
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o600))
+                .map_err(|e| e.to_string())?;
+        }
+        Ok(())
     }
 }
 
@@ -365,26 +508,80 @@ mod tests {
     }
 
     #[test]
-    fn claude_defaults_to_haiku_and_has_no_key_setting() {
-        let config = Config::parse("[claude]\nmodel = \"\"\n").unwrap();
-        assert_eq!(config.claude.model, "haiku");
-        assert_eq!(config.claude.command, "claude");
-        assert!(config.claude.enabled);
-        let text = toml::to_string(&Config::default()).unwrap().to_lowercase();
+    fn ai_defaults_to_haiku_on_the_subscription() {
+        let config = Config::default();
+        assert!(config.ai.enabled);
+        assert_eq!(config.ai.default, "haiku");
+        assert_eq!(
+            config.ai.models["haiku"],
+            ModelConfig::new("claude", "haiku")
+        );
+        // Nothing secret is written by default.
+        let text = toml::to_string(&config).unwrap().to_lowercase();
         assert!(!text.contains("api_key") && !text.contains("token"));
     }
 
     #[test]
+    fn old_claude_section_is_migrated() {
+        let config = Config::parse("[claude]\nenabled = false\nmodel = \"sonnet\"\n").unwrap();
+        assert!(!config.ai.enabled);
+        assert_eq!(config.ai.default, "sonnet");
+        assert!(config.claude.is_none());
+        assert!(!toml::to_string(&config).unwrap().contains("[claude]"));
+
+        let custom =
+            Config::parse("[claude]\nmodel = \"claude-opus-4-1\"\ncommand = \"/opt/claude\"\n")
+                .unwrap();
+        assert_eq!(custom.ai.default, "claude");
+        assert_eq!(custom.ai.models["claude"].model, "claude-opus-4-1");
+        assert_eq!(custom.ai.models["haiku"].command, "/opt/claude");
+
+        // An empty model in the old section keeps the default.
+        assert_eq!(
+            Config::parse("[claude]\nmodel = \"\"\n")
+                .unwrap()
+                .ai
+                .default,
+            "haiku"
+        );
+    }
+
+    #[test]
+    fn models_are_validated() {
+        let config = Config::parse(
+            "[ai]\ndefault = \"nope\"\n[ai.models.gpt]\nprovider = \"openai\"\nmodel = \"gpt-5-mini\"\n[ai.models.\"two words\"]\nprovider = \"openai\"\n[ai.models.empty]\nmodel = \"x\"\n",
+        )
+        .unwrap();
+        assert_eq!(config.ai.models.keys().collect::<Vec<_>>(), ["gpt"]);
+        assert_eq!(config.ai.default, "gpt");
+    }
+
+    #[test]
     fn theme_mode_is_validated() {
-        assert_eq!(Config::parse("[theme]\nmode = \"light\"").unwrap().theme.mode, "light");
-        assert_eq!(Config::parse("[theme]\nmode = \"neon\"").unwrap().theme.mode, "dark");
+        assert_eq!(
+            Config::parse("[theme]\nmode = \"light\"")
+                .unwrap()
+                .theme
+                .mode,
+            "light"
+        );
+        assert_eq!(
+            Config::parse("[theme]\nmode = \"neon\"")
+                .unwrap()
+                .theme
+                .mode,
+            "dark"
+        );
         assert_eq!(Config::default().theme.mode, "dark");
     }
 
     #[test]
     fn round_trips_through_toml() {
         let mut config = Config::default();
-        config.aliases.insert("gh".to_string(), "https://github.com/search?q={}".to_string());
+        config.aliases.insert(
+            "gh".to_string(),
+            "https://github.com/search?q={}".to_string(),
+        );
         let text = toml::to_string(&config).unwrap();
         assert_eq!(Config::parse(&text).unwrap(), config);
     }

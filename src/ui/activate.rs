@@ -5,9 +5,10 @@ use crate::alias;
 use crate::app_launcher::AppLauncher;
 use crate::emoji_picker::EmojiPicker;
 use crate::files::FileEntry;
+use crate::scripts;
 use crate::search;
 use crate::settings::SettingsWindow;
-use crate::state::{ResultItem, TurnStatus};
+use crate::state::{ResultItem, SecondaryAction, TurnStatus};
 use crate::terminal::Terminal;
 use crate::window_switcher;
 use gtk::prelude::*;
@@ -30,13 +31,18 @@ impl Launcher {
 
         let outcome = match item {
             ResultItem::Info(_) => return,
-            ResultItem::Ask { question, .. } => {
-                self.ask(question);
+            ResultItem::Ask {
+                question, model, ..
+            } => {
+                self.ask(question, model);
                 return;
             }
             ResultItem::Transcript { turns, .. } => {
                 // Enter on the conversation copies the latest answer.
-                let Some(last) = turns.iter().rev().find(|turn| turn.status == TurnStatus::Done)
+                let Some(last) = turns
+                    .iter()
+                    .rev()
+                    .find(|turn| turn.status == TurnStatus::Done)
                 else {
                     return;
                 };
@@ -90,9 +96,73 @@ impl Launcher {
                 result
             }
             ResultItem::Calc { result, .. } => self.copy_text(&result),
-            ResultItem::Clipboard(text) => {
+            ResultItem::Clipboard(entry) => {
                 remember = false;
-                self.copy_text(&text)
+                self.copy_text(&entry.text)
+            }
+            ResultItem::ScriptRun { script, args } => {
+                remember = !args.is_empty();
+                scripts::run_script(&script, &args)
+            }
+            ResultItem::ScriptOutput(item) => {
+                match scripts::run_item_action(&item.action, self.launch_context().as_ref()) {
+                    Ok(Some(text)) => self.copy_text(&text),
+                    Ok(None) => Ok(()),
+                    Err(e) => Err(e),
+                }
+            }
+            ResultItem::ItemAction { action, .. } => {
+                remember = false;
+                match action {
+                    SecondaryAction::CloseWindow(window) => {
+                        self.close_window_in_place(window);
+                        return;
+                    }
+                    SecondaryAction::ToggleClipboardPin(text) => {
+                        let pinned = self.state.borrow_mut().clipboard.toggle_pin(&text);
+                        self.leave_action_menu();
+                        self.flash_footer_notice(if pinned {
+                            "Pinned snippet"
+                        } else {
+                            "Unpinned snippet"
+                        });
+                        return;
+                    }
+                    SecondaryAction::RemoveClipboardEntry(text) => {
+                        self.state.borrow_mut().clipboard.remove(&text);
+                        self.leave_action_menu();
+                        self.flash_footer_notice("Removed clipboard entry");
+                        return;
+                    }
+                    SecondaryAction::LaunchApp(app) => {
+                        let _ = self.state.borrow_mut().close_action_menu();
+                        let res = AppLauncher::launch(&app, self.launch_context().as_ref());
+                        if res.is_ok() {
+                            self.state.borrow_mut().usage.record(&app.id);
+                        }
+                        res
+                    }
+                    SecondaryAction::OpenFile { file, reveal } => {
+                        let _ = self.state.borrow_mut().close_action_menu();
+                        let res = self.open_file(&file, reveal);
+                        if res.is_ok() {
+                            self.state.borrow_mut().usage.record(&file.usage_id());
+                        }
+                        res
+                    }
+                    SecondaryAction::OpenTerminalInDir(dir) => {
+                        let _ = self.state.borrow_mut().close_action_menu();
+                        Terminal::open_in_dir(&dir)
+                    }
+                    SecondaryAction::FocusWindow(window) => {
+                        let _ = self.state.borrow_mut().close_action_menu();
+                        window_switcher::activate(&window)
+                    }
+                    SecondaryAction::CopyText(text) => {
+                        let _ = self.state.borrow_mut().close_action_menu();
+                        self.copy_text(&text)
+                    }
+                }
             }
             ResultItem::Terminal(command) => Terminal::execute_command(&command),
             ResultItem::Search { engine, query } => {
@@ -106,6 +176,13 @@ impl Launcher {
                 let result = self.open_file(&file, alternate);
                 if result.is_ok() {
                     self.state.borrow_mut().usage.record(&file.usage_id());
+                }
+                result
+            }
+            ResultItem::ContentMatch(m) => {
+                let result = self.open_file(&m.file, alternate);
+                if result.is_ok() {
+                    self.state.borrow_mut().usage.record(&m.file.usage_id());
                 }
                 result
             }

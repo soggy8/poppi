@@ -1,8 +1,10 @@
 //! The settings window. It uses the stock GTK theme (dark or light to match
 //! the launcher), so only a few classes of its own are styled.
 
+use crate::ai::providers;
 use crate::config::Config;
 use crate::emoji_picker::SKIN_TONES;
+use crate::model_editor::{self, ModelEditor};
 use crate::search::Engine;
 use crate::style;
 use crate::ui;
@@ -30,9 +32,29 @@ fn section(parent: &GtkBox, title: &str) {
     parent.append(&label);
 }
 
+/// A scrollable page of the settings stack; widgets are appended to the
+/// returned box.
+fn page(stack: &gtk::Stack, name: &str, title: &str) -> GtkBox {
+    let content = GtkBox::builder()
+        .orientation(Orientation::Vertical)
+        .spacing(10)
+        .margin_start(22)
+        .margin_end(22)
+        .margin_top(18)
+        .margin_bottom(22)
+        .build();
+    let scrolled = ScrolledWindow::new();
+    scrolled.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
+    scrolled.set_child(Some(&content));
+    stack.add_titled(&scrolled, Some(name), title);
+    content
+}
+
 fn hint(parent: &GtkBox, text: &str) -> Label {
     let label = Label::new(Some(text));
-    label.set_halign(gtk::Align::Start);
+    // Fill the page width and wrap there, rather than at the label's own
+    // (narrow) natural width.
+    label.set_halign(gtk::Align::Fill);
     label.set_xalign(0.0);
     label.set_wrap(true);
     label.add_css_class("hint");
@@ -65,7 +87,8 @@ fn color_row(parent: &GtkBox, text: &str, value: &str) -> Entry {
     picker.connect_rgba_notify(move |picker| {
         let rgba = picker.rgba();
         // Keep whatever the user typed if it already means this colour.
-        let unchanged = gdk::RGBA::parse(entry_for_picker.text()).is_ok_and(|current| current == rgba);
+        let unchanged =
+            gdk::RGBA::parse(entry_for_picker.text()).is_ok_and(|current| current == rgba);
         if !unchanged {
             let text = if rgba.alpha() < 1.0 {
                 rgba.to_string()
@@ -175,22 +198,17 @@ impl SettingsWindow {
         let window = Window::builder()
             .application(app)
             .title("Poppi Launcher Settings")
-            .default_width(560)
-            .default_height(760)
+            .default_width(820)
+            .default_height(600)
             .build();
         window.set_widget_name(WINDOW_NAME);
         window.add_css_class(WINDOW_NAME);
 
-        let main_box = GtkBox::builder()
-            .orientation(Orientation::Vertical)
-            .spacing(10)
-            .margin_start(22)
-            .margin_end(22)
-            .margin_top(10)
-            .margin_bottom(22)
-            .build();
-
-        section(&main_box, "Appearance");
+        let stack = gtk::Stack::new();
+        stack.set_transition_type(gtk::StackTransitionType::Crossfade);
+        stack.set_hexpand(true);
+        stack.set_vexpand(true);
+        let mut main_box = page(&stack, "appearance", "Appearance");
         let mode_labels: Vec<&str> = THEME_MODES.iter().map(|(_, label)| *label).collect();
         let mode = dropdown(
             &main_box,
@@ -202,7 +220,11 @@ impl SettingsWindow {
                 .unwrap_or(0),
         );
         let accent = color_row(&main_box, "Accent color", &current.theme.accent_color);
-        let background = color_row(&main_box, "Background (dark)", &current.theme.background_color);
+        let background = color_row(
+            &main_box,
+            "Background (dark)",
+            &current.theme.background_color,
+        );
         let text = color_row(&main_box, "Text (dark)", &current.theme.text_color);
         let light_background = color_row(
             &main_box,
@@ -210,11 +232,32 @@ impl SettingsWindow {
             &current.theme.light_background_color,
         );
         let light_text = color_row(&main_box, "Text (light)", &current.theme.light_text_color);
-        let font_size = spin(&main_box, "Font size (pt)", 6.0, 48.0, 1.0, f64::from(current.theme.font_size));
-        let radius = spin(&main_box, "Corner radius (px)", 0.0, 50.0, 1.0, current.theme.border_radius);
-        let width = spin(&main_box, "Width (px)", 300.0, 2000.0, 10.0, f64::from(current.theme.width));
+        let font_size = spin(
+            &main_box,
+            "Font size (pt)",
+            6.0,
+            48.0,
+            1.0,
+            f64::from(current.theme.font_size),
+        );
+        let radius = spin(
+            &main_box,
+            "Corner radius (px)",
+            0.0,
+            50.0,
+            1.0,
+            current.theme.border_radius,
+        );
+        let width = spin(
+            &main_box,
+            "Width (px)",
+            300.0,
+            2000.0,
+            10.0,
+            f64::from(current.theme.width),
+        );
 
-        section(&main_box, "Behavior");
+        main_box = page(&stack, "behavior", "Behavior");
         let max_results = spin(
             &main_box,
             "Results visible at once",
@@ -242,9 +285,10 @@ impl SettingsWindow {
             current.behavior.stay_resident,
         );
 
-        section(&main_box, "Search");
+        main_box = page(&stack, "search", "Search");
         let engine_labels: Vec<&str> = Engine::ALL.iter().map(|e| e.label()).collect();
-        let selected_engine = Engine::from_id(&current.search.default_engine).unwrap_or(Engine::Google);
+        let selected_engine =
+            Engine::from_id(&current.search.default_engine).unwrap_or(Engine::Google);
         let default_engine = dropdown(
             &main_box,
             "Default search engine",
@@ -254,26 +298,39 @@ impl SettingsWindow {
                 .position(|e| *e == selected_engine)
                 .unwrap_or(0),
         );
-        let youtube = check(&main_box, "Enable YouTube search (yt)", current.search.youtube_enabled);
-        let chatgpt = check(&main_box, "Enable ChatGPT search (gpt)", current.search.chatgpt_enabled);
-
-        section(&main_box, "Claude");
-        let claude_enabled = check(
+        let youtube = check(
             &main_box,
-            "Ask Claude when the text ends with ? (or starts with ask)",
-            current.claude.enabled,
+            "Enable YouTube search (yt)",
+            current.search.youtube_enabled,
         );
-        let claude_model = Entry::new();
-        claude_model.set_text(&current.claude.model);
-        claude_model.set_width_chars(20);
-        labelled(&main_box, "Model (haiku, sonnet, opus)", &claude_model);
+        let chatgpt = check(
+            &main_box,
+            "Enable ChatGPT search (gpt)",
+            current.search.chatgpt_enabled,
+        );
+
+        main_box = page(&stack, "ai", "AI models");
+        let ai_enabled = check(
+            &main_box,
+            "Ask the default model when the text ends with ? (or starts with ask)",
+            current.ai.enabled,
+        );
         hint(
             &main_box,
-            "Uses the Claude Code login on this computer (your subscription). No API key is used.",
+            "Type a model's name before a question to ask that model instead, e.g. \"sonnet why is the sky blue\". \
+             Claude, Gemini CLI and Codex use their own logins (your subscriptions). \
+             Keys for API providers are saved in the GNOME keyring.",
         );
+        model_editor::legend(&main_box);
+        let models = ModelEditor::build(&main_box, &current.ai);
 
+        main_box = page(&stack, "features", "Features");
         section(&main_box, "Calculator");
-        let calculator = check(&main_box, "Enable calculator and unit conversion", current.calculator.enabled);
+        let calculator = check(
+            &main_box,
+            "Enable calculator and unit conversion",
+            current.calculator.enabled,
+        );
         let currency = check(
             &main_box,
             "Convert currencies (downloads ECB rates from frankfurter.dev)",
@@ -281,8 +338,21 @@ impl SettingsWindow {
         );
 
         section(&main_box, "Files");
-        let files_enabled = check(&main_box, "Enable file search (f name)", current.files.enabled);
-        let files_hidden = check(&main_box, "Include hidden files", current.files.include_hidden);
+        let files_enabled = check(
+            &main_box,
+            "Enable file search (f name)",
+            current.files.enabled,
+        );
+        let files_hidden = check(
+            &main_box,
+            "Include hidden files",
+            current.files.include_hidden,
+        );
+        let files_gitignore = check(
+            &main_box,
+            "Skip files ignored by .gitignore",
+            current.files.respect_gitignore,
+        );
 
         section(&main_box, "Clipboard and emoji");
         let clipboard_enabled = check(
@@ -300,7 +370,7 @@ impl SettingsWindow {
                 .unwrap_or(0),
         );
 
-        section(&main_box, "Aliases");
+        main_box = page(&stack, "aliases", "Aliases");
         hint(
             &main_box,
             "A keyword that opens a URL or runs a command. {} is replaced by what you type after it.",
@@ -316,10 +386,10 @@ impl SettingsWindow {
         add_alias.connect_clicked(move |_| alias_row(&alias_list_for_add, "", ""));
         main_box.append(&add_alias);
 
-        section(&main_box, "Config file");
+        main_box = page(&stack, "config", "Config file");
         hint(
             &main_box,
-            "Indexed folders, exclusions and Claude's instructions are edited in the file. Changes are picked up when it is saved.",
+            "Indexed folders, exclusions and the AI instructions (system_prompt) are edited in the file. Changes are picked up when it is saved.",
         );
         let open_config = Button::with_label("Open config file");
         open_config.set_halign(gtk::Align::Start);
@@ -332,20 +402,34 @@ impl SettingsWindow {
         });
         main_box.append(&open_config);
 
-        let status = hint(&main_box, "Changes apply as soon as you save.");
-        status.set_margin_top(8);
+        // Below the pages: status and buttons, always visible.
+        let bottom = GtkBox::builder()
+            .orientation(Orientation::Horizontal)
+            .spacing(10)
+            .margin_start(16)
+            .margin_end(16)
+            .margin_top(10)
+            .margin_bottom(12)
+            .build();
+        let status = Label::new(Some("Changes apply as soon as you save."));
+        status.add_css_class("hint");
+        status.set_wrap(true);
+        status.set_xalign(0.0);
+        status.set_hexpand(true);
+        bottom.append(&status);
 
         let buttons = GtkBox::builder()
             .orientation(Orientation::Horizontal)
             .spacing(10)
             .halign(gtk::Align::End)
+            .valign(gtk::Align::Center)
             .build();
         let cancel_button = Button::with_label("Cancel");
         let save_button = Button::with_label("Save");
         save_button.add_css_class("suggested-action");
         buttons.append(&cancel_button);
         buttons.append(&save_button);
-        main_box.append(&buttons);
+        bottom.append(&buttons);
 
         let window_for_cancel = window.clone();
         cancel_button.connect_clicked(move |_| window_for_cancel.close());
@@ -364,6 +448,24 @@ impl SettingsWindow {
                 status.set_text("Some colors are not valid; nothing was saved.");
                 return;
             }
+            let edited = match models.collect() {
+                Ok(edited) => edited,
+                Err(error) => {
+                    status.set_text(&format!("{} Nothing was saved.", error));
+                    return;
+                }
+            };
+
+            // Keys go to the keyring; without one, into the config file.
+            let mut key_problems = Vec::new();
+            let mut inline_keys = Vec::new();
+            for (id, label, key) in &edited.keys {
+                if let Err(error) = providers::keyring_store(id, label, key) {
+                    key_problems.push(error);
+                    inline_keys.push((id.clone(), key.clone()));
+                }
+            }
+            models.keys_saved();
 
             let updated = {
                 let mut config = config.borrow_mut();
@@ -393,12 +495,20 @@ impl SettingsWindow {
                     .to_string();
                 config.search.youtube_enabled = youtube.is_active();
                 config.search.chatgpt_enabled = chatgpt.is_active();
-                config.claude.enabled = claude_enabled.is_active();
-                config.claude.model = claude_model.text().trim().to_string();
+                config.ai.enabled = ai_enabled.is_active();
+                config.ai.models = edited.models.clone();
+                config.ai.default = edited.default.clone();
+                for (name, entry) in config.ai.models.iter_mut() {
+                    let id = providers::keyring_id(name, entry);
+                    if let Some((_, key)) = inline_keys.iter().find(|(key_id, _)| *key_id == id) {
+                        entry.api_key = key.clone();
+                    }
+                }
                 config.calculator.enabled = calculator.is_active();
                 config.calculator.currency = currency.is_active();
                 config.files.enabled = files_enabled.is_active();
                 config.files.include_hidden = files_hidden.is_active();
+                config.files.respect_gitignore = files_gitignore.is_active();
                 config.clipboard.enabled = clipboard_enabled.is_active();
                 config.emoji.skin_tone = SKIN_TONES
                     .get(skin_tone.selected() as usize)
@@ -414,6 +524,10 @@ impl SettingsWindow {
             style::apply(&updated);
             ui::config_changed();
             match updated.save() {
+                Ok(()) if !key_problems.is_empty() => status.set_text(&format!(
+                    "Saved, but the keyring did not take the key, so it is in the config file instead. {}",
+                    key_problems[0]
+                )),
                 Ok(()) => window_for_save.close(),
                 Err(e) => {
                     eprintln!("Error saving config: {}", e);
@@ -422,10 +536,24 @@ impl SettingsWindow {
             }
         });
 
-        let scrolled = ScrolledWindow::new();
-        scrolled.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
-        scrolled.set_child(Some(&main_box));
-        window.set_child(Some(&scrolled));
+        let sidebar = gtk::StackSidebar::new();
+        sidebar.set_stack(&stack);
+        sidebar.set_width_request(170);
+        let body = GtkBox::new(Orientation::Horizontal, 0);
+        body.append(&sidebar);
+        body.append(&gtk::Separator::new(Orientation::Vertical));
+        body.append(&stack);
+        let content = GtkBox::new(Orientation::Vertical, 0);
+        content.append(&body);
+        content.append(&gtk::Separator::new(Orientation::Horizontal));
+        content.append(&bottom);
+        window.set_child(Some(&content));
+
+        // The UI test screenshots a chosen page.
+        #[cfg(feature = "ui-test")]
+        if let Ok(name) = std::env::var("POPPI_UI_SETTINGS_PAGE") {
+            stack.set_visible_child_name(&name);
+        }
         window.present();
     }
 }

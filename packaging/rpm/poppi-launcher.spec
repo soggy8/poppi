@@ -2,11 +2,11 @@
 # it downloads crates during the build, so it needs network access
 # (in COPR: enable "Enable internet access during builds").
 #
-#   git archive --prefix=poppi-launcher-0.2.0/ -o ~/rpmbuild/SOURCES/poppi-launcher-0.2.0.tar.gz HEAD
+#   git archive --prefix=poppi-launcher-0.3.0/ -o ~/rpmbuild/SOURCES/poppi-launcher-0.3.0.tar.gz HEAD
 #   rpmbuild -bb packaging/rpm/poppi-launcher.spec
 
 Name:           poppi-launcher
-Version:        0.2.0
+Version:        0.3.0
 Release:        1%{?dist}
 Summary:        Fast application launcher for GNOME
 
@@ -20,13 +20,14 @@ BuildRequires:  gtk4-devel
 Requires:       gtk4
 Recommends:     wl-clipboard
 Recommends:     curl
+Recommends:     libsecret
 Suggests:       wmctrl
 Suggests:       xdotool
 
 %description
 Poppi Launcher searches applications, files and open windows, calculates and
 converts units and currencies, picks emojis, runs terminal commands and
-answers questions through Claude Code, from one search bar.
+answers questions through local or cloud AI models, from one search bar.
 
 %prep
 %autosetup
@@ -50,5 +51,8 @@ install -Dm644 data/com.poppi.launcher.svg %{buildroot}%{_datadir}/icons/hicolor
 %{_datadir}/icons/hicolor/scalable/apps/com.poppi.launcher.svg
 
 %changelog
+* Thu Nov 12 2026 andrej - 0.3.0-1
+- Multi-provider AI models, keyring support, code block copy and faster indexing
+
 * Wed Nov 11 2026 andrej - 0.2.0-1
 - Initial package
