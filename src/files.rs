@@ -592,7 +592,7 @@ pub fn search<'a>(
                 })
         })
         .collect();
-    results.sort_by(|a, b| b.1.cmp(&a.1));
+    results.sort_by_key(|item| std::cmp::Reverse(item.1));
     results
         .into_iter()
         .take(limit)
@@ -770,7 +770,7 @@ pub fn search_contents(
         .filter(|e| !e.is_dir && !has_binary_extension(&e.name_lower))
         .map(|e| (e, recency_bonus(e.modified, now) - e.depth as i64 * 3))
         .collect();
-    candidates.sort_by(|a, b| b.1.cmp(&a.1));
+    candidates.sort_by_key(|item| std::cmp::Reverse(item.1));
     candidates.truncate(MAX_GREP_FILES);
 
     if cancel_gen.load(Ordering::Relaxed) != my_gen {

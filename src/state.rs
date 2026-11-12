@@ -1076,7 +1076,7 @@ impl LauncherState {
                     .map(|score| (action, score))
             })
             .collect();
-        found.sort_by(|a, b| b.1.cmp(&a.1));
+        found.sort_by_key(|item| std::cmp::Reverse(item.1));
         found
             .into_iter()
             .map(|(action, _)| (action, action.keywords().contains(&query.as_str())))
