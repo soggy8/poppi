@@ -16,9 +16,7 @@ thread_local! {
 pub fn is_valid_color(color: &str) -> bool {
     let color = color.trim();
     // Reject anything that could break out of the declaration it is pasted into.
-    !color.is_empty()
-        && !color.contains([';', '{', '}'])
-        && gdk::RGBA::parse(color).is_ok()
+    !color.is_empty() && !color.contains([';', '{', '}']) && gdk::RGBA::parse(color).is_ok()
 }
 
 fn color_or(color: &str, fallback: &str) -> String {
@@ -95,7 +93,10 @@ pub fn palette(config: &Config, dark: bool) -> Palette {
         )
     } else {
         (
-            color_or(&theme.light_background_color, &defaults.light_background_color),
+            color_or(
+                &theme.light_background_color,
+                &defaults.light_background_color,
+            ),
             color_or(&theme.light_text_color, &defaults.light_text_color),
         )
     };
@@ -124,10 +125,19 @@ pub fn build_css(config: &Config, dark: bool) -> String {
         .replace("{{shadow}}", if dark { "0.55" } else { "0.22" })
         .replace("{{radius}}", &format!("{}", radius))
         // Inner elements never look rounder than the card itself.
-        .replace("{{radius_small}}", &format!("{:.1}", (radius * 0.6).min(9.0)))
+        .replace(
+            "{{radius_small}}",
+            &format!("{:.1}", (radius * 0.6).min(9.0)),
+        )
         .replace("{{font_size}}", &font_size.to_string())
-        .replace("{{title_size}}", &format!("{:.1}", (f64::from(font_size) * 0.8).max(9.0)))
-        .replace("{{result_size}}", &format!("{:.1}", f64::from(font_size) * 1.15))
+        .replace(
+            "{{title_size}}",
+            &format!("{:.1}", (f64::from(font_size) * 0.8).max(9.0)),
+        )
+        .replace(
+            "{{result_size}}",
+            &format!("{:.1}", f64::from(font_size) * 1.15),
+        )
 }
 
 /// Install (once) and refresh the application stylesheet. Calling it again

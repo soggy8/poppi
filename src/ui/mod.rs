@@ -7,6 +7,7 @@
 
 mod activate;
 mod chat;
+mod dictation;
 mod keys;
 #[cfg(feature = "ui-test")]
 mod smoke;
@@ -77,7 +78,10 @@ fn init_layer_shell(window: &Window) {
         .and_downcast::<gtk::gdk::Monitor>()
         .map(|monitor| monitor.geometry().height())
         .unwrap_or(1080);
-    window.set_margin(Edge::Top, (monitor_height as f64 * LAYER_TOP_FRACTION) as i32);
+    window.set_margin(
+        Edge::Top,
+        (monitor_height as f64 * LAYER_TOP_FRACTION) as i32,
+    );
 }
 
 /// How long typing a new folder may wait for its listing before showing
@@ -96,6 +100,7 @@ struct Launcher {
     window: Window,
     entry: Entry,
     mode_chip: Label,
+    mic_button: Button,
     divider: GtkBox,
     list_box: ListBox,
     emoji_grid: Grid,
@@ -130,6 +135,10 @@ struct Launcher {
     ai_polling: Cell<bool>,
     /// Keep the newest part of the conversation in view as it grows.
     chat_follow: Cell<bool>,
+    dictation: RefCell<dictation::Dictation>,
+    /// Bumped when dictation starts or is cancelled, so a transcript that
+    /// arrives afterwards is dropped.
+    dictation_gen: Cell<u64>,
 }
 
 /// Build the resident launcher in the background without showing the window
@@ -212,9 +221,19 @@ impl Launcher {
         mode_chip.set_valign(gtk::Align::Center);
         mode_chip.set_visible(false);
 
+        let mic_button = Button::from_icon_name("audio-input-microphone-symbolic");
+        mic_button.add_css_class("mic-button");
+        mic_button.set_has_frame(false);
+        mic_button.set_focus_on_click(false);
+        mic_button.set_can_focus(false);
+        mic_button.set_valign(gtk::Align::Center);
+        mic_button.set_tooltip_text(Some("Dictate (Ctrl+D)"));
+        mic_button.set_visible(false);
+
         search_bar.append(&search_icon);
         search_bar.append(&entry);
         search_bar.append(&mode_chip);
+        search_bar.append(&mic_button);
 
         let divider = GtkBox::new(gtk::Orientation::Horizontal, 0);
         divider.add_css_class("divider");
@@ -274,6 +293,7 @@ impl Launcher {
             window,
             entry,
             mode_chip,
+            mic_button,
             divider,
             list_box,
             emoji_grid,
@@ -304,12 +324,18 @@ impl Launcher {
             ai: RefCell::new(None),
             ai_polling: Cell::new(false),
             chat_follow: Cell::new(false),
+            dictation: RefCell::new(dictation::Dictation::default()),
+            dictation_gen: Cell::new(0),
         });
         launcher.connect_signals();
         launcher
     }
 
     fn connect_signals(self: &Rc<Self>) {
+        let this = self.clone();
+        self.mic_button
+            .connect_clicked(move |_| this.toggle_dictation());
+
         let this = self.clone();
         self.entry.connect_changed(move |_| {
             if !this.recalling.get() {
@@ -439,6 +465,8 @@ impl Launcher {
 
     fn show(self: &Rc<Self>) {
         self.end_conversation();
+        self.cancel_dictation();
+        self.update_mic_button();
         self.state.borrow_mut().reset_session();
         self.history_position.set(None);
         *self.footer_notice.borrow_mut() = None;
@@ -482,8 +510,9 @@ impl Launcher {
         if self.dismissing.replace(true) {
             return;
         }
-        // Nobody is left to read the answer.
+        // Nobody is left to read the answer, and nobody is talking to us.
         self.end_conversation();
+        self.cancel_dictation();
         if self.config.borrow().behavior.stay_resident {
             self.window.set_visible(false);
         } else {
@@ -1038,7 +1067,13 @@ impl Launcher {
         };
         self.footer_status.set_text(&status);
 
-        let desired = rows::hints(selected.as_ref(), typing_path, in_chat, busy, in_actions);
+        let desired = if self.recording() {
+            vec![("↵", "Finish"), ("Esc", "Cancel")]
+        } else if self.dictating() {
+            vec![("Esc", "Cancel")]
+        } else {
+            rows::hints(selected.as_ref(), typing_path, in_chat, busy, in_actions)
+        };
         let mut slots = self.hint_slots.borrow_mut();
         while slots.len() < desired.len() {
             slots.push(HintSlot::new(&self.footer_keys));

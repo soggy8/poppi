@@ -60,6 +60,7 @@ sudo pacman -S gtk4
 | Currency conversion & HTTP AI APIs | `curl` | `curl` |
 | Store AI API keys in the GNOME keyring | `libsecret` (`secret-tool`) | `libsecret` (`secret-tool`) |
 | Ask AI via CLI logins | [Claude Code](https://claude.com/claude-code), Gemini CLI, or Codex | same |
+| Voice dictation (Ctrl+D) | `pw-record` (PipeWire) or `arecord`, plus [whisper.cpp](https://github.com/ggml-org/whisper.cpp)'s `whisper-cli` | same |
 | Window switcher | [window-calls](https://github.com/ickyicky/window-calls) GNOME extension | `wmctrl` (plus `xprop`) or `xdotool` |
 
 On GNOME Wayland no tool can type into another window, so emojis are copied to the clipboard instead; paste with Ctrl+V.
@@ -121,6 +122,7 @@ The chip on the right of the search bar names the mode your text is in, and the 
 | Ctrl+Shift+C | In an AI conversation: copy the latest fenced code block |
 | Escape / Ctrl+C | While AI is answering: stop generation without closing |
 | Backspace on an empty bar | Leave an AI conversation |
+| Ctrl+D | Dictate into the search bar; Enter (or Ctrl+D) finishes, Escape cancels |
 | Escape | Close the launcher |
 
 ### Search Modes
@@ -164,6 +166,25 @@ The chip on the right of the search bar names the mode your text is in, and the 
 12. **History**: `history` lists past queries (Enter puts one back in the bar), `history yt` filters, `history clear` forgets them. App launches and window switches are not recorded.
 
 13. **Settings**: `poppi settings`, or just `settings`
+
+### Voice input
+
+Press **Ctrl+D** (or click the microphone in the search bar) and speak: the words appear in the search bar as you talk, and the results update with them. Press **Enter** to finish; a final, more careful pass may still correct a word or two. Check the text, then press Enter again to run it. Dictation works for everything you can type, including questions for the AI (`What's the capital of France?`). Escape cancels and puts the bar back as it was. Recording stops by itself after 30 seconds.
+
+Speech is turned into text on your computer by [whisper.cpp](https://github.com/ggml-org/whisper.cpp). The audio is kept in memory while you speak and is gone once the text is in the bar. Setup:
+
+1. Install `whisper-cli`: build whisper.cpp (`cmake -B build && cmake --build build --target whisper-cli`) and put `build/bin/whisper-cli` on your `PATH`, or use your distribution's package if it ships the CLI (Fedora's `whisper-cpp` only has the library).
+2. Download a model to the default location:
+
+   ```bash
+   mkdir -p ~/.local/share/poppi_launcher
+   curl -L -o ~/.local/share/poppi_launcher/ggml-base.en.bin \
+       https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin
+   ```
+
+   `base.en` (142 MB) is a good balance for English. For other languages use a multilingual model such as `ggml-base.bin` or `ggml-small.bin` and set `model` (and optionally `language`) under `[voice]`.
+
+The microphone button appears once everything is in place; Settings → Features shows what is missing otherwise. Any other speech-to-text tool works too: set `[voice] command` to a shell command that reads the WAV file `{file}` and prints the text. Such a command runs once, after you finish speaking, since it may be slow or a service billed per call.
 
 ### Asking AI
 
@@ -269,6 +290,12 @@ size = 30
 
 [emoji]
 skin_tone = "default"         # default, light, medium-light, medium, medium-dark, dark
+
+[voice]
+enabled = true
+model = "~/.local/share/poppi_launcher/ggml-base.en.bin"   # whisper.cpp model
+language = "auto"             # or "en", "de", "sl", …; English-only models ignore it
+# command = "my-stt {file}"   # instead of whisper-cli: prints the text of a 16 kHz mono WAV
 
 [aliases]
 # keyword = "URL or command"; {} is replaced by what you type after the keyword

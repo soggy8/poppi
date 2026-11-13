@@ -143,7 +143,10 @@ pub fn highlight(matcher: &Matcher, query: &str, text: &str) -> Vec<usize> {
         return (start..start + query.len()).collect();
     }
 
-    let tokens: Vec<&[char]> = query.split(|c| c.is_whitespace()).filter(|t| !t.is_empty()).collect();
+    let tokens: Vec<&[char]> = query
+        .split(|c| c.is_whitespace())
+        .filter(|t| !t.is_empty())
+        .collect();
     if tokens.len() > 1 {
         let mut positions = Vec::new();
         for token in &tokens {
@@ -225,7 +228,9 @@ mod tests {
 
     #[test]
     fn shorter_text_wins_within_a_tier() {
-        assert!(score("fire", "firefox").unwrap() > score("fire", "firewall configuration").unwrap());
+        assert!(
+            score("fire", "firefox").unwrap() > score("fire", "firewall configuration").unwrap()
+        );
     }
 
     #[test]
@@ -234,9 +239,15 @@ mod tests {
         assert_eq!(highlight(&m, "fire", "Firefox"), vec![0, 1, 2, 3]);
         // Prefers the word start over an earlier mid-word occurrence.
         assert_eq!(highlight(&m, "co", "Disco Code"), vec![6, 7]);
-        assert_eq!(highlight(&m, "office", "LibreOffice"), vec![5, 6, 7, 8, 9, 10]);
+        assert_eq!(
+            highlight(&m, "office", "LibreOffice"),
+            vec![5, 6, 7, 8, 9, 10]
+        );
         assert_eq!(highlight(&m, "vsc", "Visual Studio Code"), vec![0, 7, 14]);
-        assert_eq!(highlight(&m, "stu vis", "Visual Studio Code"), vec![0, 1, 2, 7, 8, 9]);
+        assert_eq!(
+            highlight(&m, "stu vis", "Visual Studio Code"),
+            vec![0, 1, 2, 7, 8, 9]
+        );
         assert_eq!(highlight(&m, "frfx", "Firefox"), vec![0, 2, 4, 6]);
         assert!(highlight(&m, "browser", "Firefox").is_empty());
         assert!(highlight(&m, "", "Firefox").is_empty());

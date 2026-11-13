@@ -1,5 +1,5 @@
-use crate::utils;
 use crate::matching::Matcher;
+use crate::utils;
 use std::io::Write;
 use std::process::{Command, Stdio};
 
@@ -39,7 +39,14 @@ pub fn skin_tone(name: &str) -> emojis::SkinTone {
     }
 }
 
-pub const SKIN_TONES: [&str; 6] = ["default", "light", "medium-light", "medium", "medium-dark", "dark"];
+pub const SKIN_TONES: [&str; 6] = [
+    "default",
+    "light",
+    "medium-light",
+    "medium",
+    "medium-dark",
+    "dark",
+];
 
 impl EmojiPicker {
     /// `tone` is applied to every emoji that supports a skin tone.
@@ -186,7 +193,11 @@ mod tests {
         let picker = picker();
         assert_eq!(picker.search("", &[], 24).len(), 24);
 
-        let recent = vec!["🔥".to_string(), "not an emoji".to_string(), "👍".to_string()];
+        let recent = vec![
+            "🔥".to_string(),
+            "not an emoji".to_string(),
+            "👍".to_string(),
+        ];
         let results = picker.search("", &recent, 24);
         assert_eq!(results.len(), 24);
         assert_eq!(results[0].emoji, "🔥");
@@ -197,7 +208,10 @@ mod tests {
     #[test]
     fn search_finds_by_name_and_shortcode() {
         let picker = picker();
-        assert!(picker.search("fire", &[], 24).iter().any(|e| e.emoji == "🔥"));
+        assert!(picker
+            .search("fire", &[], 24)
+            .iter()
+            .any(|e| e.emoji == "🔥"));
         assert!(picker.search("+1", &[], 24).iter().any(|e| e.emoji == "👍"));
         assert!(picker.search("zzzzqqqqxxxx", &[], 24).is_empty());
         assert_eq!(picker.search("FIRE", &[], 5), picker.search("fire", &[], 5));
@@ -209,7 +223,10 @@ mod tests {
         let thumbs = toned.search("thumbs up", &[], 5);
         assert_eq!(thumbs[0].emoji, "👍🏽");
         // Emojis without skin tones are unchanged.
-        assert!(toned.search("fire", &[], 24).iter().any(|e| e.emoji == "🔥"));
+        assert!(toned
+            .search("fire", &[], 24)
+            .iter()
+            .any(|e| e.emoji == "🔥"));
         assert_eq!(skin_tone("nonsense"), emojis::SkinTone::Default);
         assert_eq!(skin_tone(SKIN_TONES[5]), emojis::SkinTone::Dark);
     }

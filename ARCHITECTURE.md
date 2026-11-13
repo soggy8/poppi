@@ -13,6 +13,7 @@ poppi_launcher/
 │   │   ├── keys.rs         # Keyboard handling
 │   │   ├── activate.rs     # Running the selected result
 │   │   ├── chat.rs         # AI conversation lifecycle, streaming, cancellation
+│   │   ├── dictation.rs    # Voice input into the search bar
 │   │   └── smoke.rs        # Scripted UI driver (feature "ui-test" only)
 │   ├── ai/
 │   │   ├── mod.rs          # Session, Event channel, one-shot job runner
@@ -35,6 +36,7 @@ poppi_launcher/
 │   ├── markdown.rs         # Markdown -> structured prose/code blocks + Pango markup
 │   ├── emoji_picker.rs     # Emoji search and insertion
 │   ├── clipboard.rs        # In-memory clipboard history
+│   ├── voice.rs            # Microphone recording and speech-to-text
 │   ├── system.rs           # Lock, suspend, log out, restart, power off
 │   ├── history.rs          # Past queries (also recent emojis)
 │   ├── alias.rs            # User-defined aliases
@@ -91,8 +93,8 @@ overlay (anchored to the top, exclusive keyboard) when the compositor supports
 the protocol; otherwise, as on GNOME, it stays a plain undecorated window.
 
 All state lives on the GTK main thread (`Rc<RefCell<..>>`). Blocking jobs
-(listing windows, indexing files, downloading rates, keyring lookups) run
-through `gio::spawn_blocking`. AI output arrives on a channel from a reader
+(listing windows, indexing files, downloading rates, keyring lookups,
+transcribing speech) run through `gio::spawn_blocking`. AI output arrives on a channel from a reader
 thread and is drained by a GLib timer that updates only the active turn's
 widgets in place (`sync_streaming_chat`).
 

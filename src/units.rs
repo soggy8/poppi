@@ -24,32 +24,115 @@ enum Kind {
 
 /// (names, kind, size in the kind's base unit, display symbol)
 const UNITS: &[(&[&str], Kind, f64, &str)] = &[
-    (&["mm", "millimeter", "millimeters", "millimetre", "millimetres"], Kind::Length, 0.001, "mm"),
-    (&["cm", "centimeter", "centimeters", "centimetre", "centimetres"], Kind::Length, 0.01, "cm"),
-    (&["m", "meter", "meters", "metre", "metres"], Kind::Length, 1.0, "m"),
-    (&["km", "kilometer", "kilometers", "kilometre", "kilometres"], Kind::Length, 1000.0, "km"),
+    (
+        &[
+            "mm",
+            "millimeter",
+            "millimeters",
+            "millimetre",
+            "millimetres",
+        ],
+        Kind::Length,
+        0.001,
+        "mm",
+    ),
+    (
+        &[
+            "cm",
+            "centimeter",
+            "centimeters",
+            "centimetre",
+            "centimetres",
+        ],
+        Kind::Length,
+        0.01,
+        "cm",
+    ),
+    (
+        &["m", "meter", "meters", "metre", "metres"],
+        Kind::Length,
+        1.0,
+        "m",
+    ),
+    (
+        &["km", "kilometer", "kilometers", "kilometre", "kilometres"],
+        Kind::Length,
+        1000.0,
+        "km",
+    ),
     (&["in", "inch", "inches", "\""], Kind::Length, 0.0254, "in"),
     (&["ft", "foot", "feet", "'"], Kind::Length, 0.3048, "ft"),
     (&["yd", "yard", "yards"], Kind::Length, 0.9144, "yd"),
     (&["mi", "mile", "miles"], Kind::Length, 1609.344, "mi"),
-    (&["nmi", "nauticalmile", "nauticalmiles"], Kind::Length, 1852.0, "nmi"),
+    (
+        &["nmi", "nauticalmile", "nauticalmiles"],
+        Kind::Length,
+        1852.0,
+        "nmi",
+    ),
     (&["mg", "milligram", "milligrams"], Kind::Mass, 1e-6, "mg"),
     (&["g", "gram", "grams"], Kind::Mass, 0.001, "g"),
-    (&["kg", "kilo", "kilos", "kilogram", "kilograms"], Kind::Mass, 1.0, "kg"),
+    (
+        &["kg", "kilo", "kilos", "kilogram", "kilograms"],
+        Kind::Mass,
+        1.0,
+        "kg",
+    ),
     (&["t", "tonne", "tonnes"], Kind::Mass, 1000.0, "t"),
     (&["oz", "ounce", "ounces"], Kind::Mass, 0.028349523125, "oz"),
-    (&["lb", "lbs", "pound", "pounds"], Kind::Mass, 0.45359237, "lb"),
+    (
+        &["lb", "lbs", "pound", "pounds"],
+        Kind::Mass,
+        0.45359237,
+        "lb",
+    ),
     (&["st", "stone", "stones"], Kind::Mass, 6.35029318, "st"),
-    (&["ml", "milliliter", "milliliters", "millilitre", "millilitres"], Kind::Volume, 0.001, "ml"),
-    (&["cl", "centiliter", "centiliters"], Kind::Volume, 0.01, "cl"),
+    (
+        &[
+            "ml",
+            "milliliter",
+            "milliliters",
+            "millilitre",
+            "millilitres",
+        ],
+        Kind::Volume,
+        0.001,
+        "ml",
+    ),
+    (
+        &["cl", "centiliter", "centiliters"],
+        Kind::Volume,
+        0.01,
+        "cl",
+    ),
     (&["dl", "deciliter", "deciliters"], Kind::Volume, 0.1, "dl"),
-    (&["l", "liter", "liters", "litre", "litres"], Kind::Volume, 1.0, "l"),
-    (&["tsp", "teaspoon", "teaspoons"], Kind::Volume, 0.00492892159375, "tsp"),
-    (&["tbsp", "tablespoon", "tablespoons"], Kind::Volume, 0.01478676478125, "tbsp"),
+    (
+        &["l", "liter", "liters", "litre", "litres"],
+        Kind::Volume,
+        1.0,
+        "l",
+    ),
+    (
+        &["tsp", "teaspoon", "teaspoons"],
+        Kind::Volume,
+        0.00492892159375,
+        "tsp",
+    ),
+    (
+        &["tbsp", "tablespoon", "tablespoons"],
+        Kind::Volume,
+        0.01478676478125,
+        "tbsp",
+    ),
     (&["floz"], Kind::Volume, 0.0295735295625, "fl oz"),
     (&["cup", "cups"], Kind::Volume, 0.2365882365, "cups"),
     (&["pt", "pint", "pints"], Kind::Volume, 0.473176473, "pt"),
-    (&["gal", "gallon", "gallons"], Kind::Volume, 3.785411784, "gal"),
+    (
+        &["gal", "gallon", "gallons"],
+        Kind::Volume,
+        3.785411784,
+        "gal",
+    ),
     (&["bit", "bits"], Kind::Data, 0.125, "bit"),
     (&["b", "byte", "bytes"], Kind::Data, 1.0, "B"),
     (&["kb", "kilobyte", "kilobytes"], Kind::Data, 1e3, "kB"),
@@ -57,18 +140,58 @@ const UNITS: &[(&[&str], Kind, f64, &str)] = &[
     (&["gb", "gigabyte", "gigabytes"], Kind::Data, 1e9, "GB"),
     (&["tb", "terabyte", "terabytes"], Kind::Data, 1e12, "TB"),
     (&["kib", "kibibyte", "kibibytes"], Kind::Data, 1024.0, "KiB"),
-    (&["mib", "mebibyte", "mebibytes"], Kind::Data, 1_048_576.0, "MiB"),
-    (&["gib", "gibibyte", "gibibytes"], Kind::Data, 1_073_741_824.0, "GiB"),
-    (&["tib", "tebibyte", "tebibytes"], Kind::Data, 1_099_511_627_776.0, "TiB"),
-    (&["ms", "millisecond", "milliseconds"], Kind::Time, 0.001, "ms"),
-    (&["s", "sec", "secs", "second", "seconds"], Kind::Time, 1.0, "s"),
-    (&["min", "mins", "minute", "minutes"], Kind::Time, 60.0, "min"),
-    (&["h", "hr", "hrs", "hour", "hours"], Kind::Time, 3600.0, "h"),
+    (
+        &["mib", "mebibyte", "mebibytes"],
+        Kind::Data,
+        1_048_576.0,
+        "MiB",
+    ),
+    (
+        &["gib", "gibibyte", "gibibytes"],
+        Kind::Data,
+        1_073_741_824.0,
+        "GiB",
+    ),
+    (
+        &["tib", "tebibyte", "tebibytes"],
+        Kind::Data,
+        1_099_511_627_776.0,
+        "TiB",
+    ),
+    (
+        &["ms", "millisecond", "milliseconds"],
+        Kind::Time,
+        0.001,
+        "ms",
+    ),
+    (
+        &["s", "sec", "secs", "second", "seconds"],
+        Kind::Time,
+        1.0,
+        "s",
+    ),
+    (
+        &["min", "mins", "minute", "minutes"],
+        Kind::Time,
+        60.0,
+        "min",
+    ),
+    (
+        &["h", "hr", "hrs", "hour", "hours"],
+        Kind::Time,
+        3600.0,
+        "h",
+    ),
     (&["d", "day", "days"], Kind::Time, 86_400.0, "days"),
     (&["wk", "week", "weeks"], Kind::Time, 604_800.0, "weeks"),
     (&["yr", "year", "years"], Kind::Time, 31_557_600.0, "years"),
     (&["m/s", "mps"], Kind::Speed, 1.0, "m/s"),
-    (&["km/h", "kmh", "kph"], Kind::Speed, 1000.0 / 3600.0, "km/h"),
+    (
+        &["km/h", "kmh", "kph"],
+        Kind::Speed,
+        1000.0 / 3600.0,
+        "km/h",
+    ),
     (&["mph"], Kind::Speed, 0.44704, "mph"),
     (&["kn", "knot", "knots"], Kind::Speed, 1852.0 / 3600.0, "kn"),
     (&["m2", "sqm"], Kind::Area, 1.0, "m²"),
@@ -273,7 +396,11 @@ mod tests {
     fn parses_the_request_shape() {
         assert_eq!(
             parse("5 km in miles"),
-            Some(Request { amount: 5.0, from: "km".into(), to: "miles".into() })
+            Some(Request {
+                amount: 5.0,
+                from: "km".into(),
+                to: "miles".into()
+            })
         );
         assert_eq!(parse("5km to mi").unwrap().from, "km");
         assert_eq!(parse("2,5 kg as lb").unwrap().amount, 2.5);
@@ -332,7 +459,10 @@ mod tests {
         let usd_eur = parse("100 usd in eur").unwrap();
         assert!(looks_like_currency(&usd_eur));
         assert_eq!(rates.convert(&usd_eur).unwrap(), "80.00 EUR");
-        assert_eq!(rates.convert(&parse("16 gbp to usd").unwrap()).unwrap(), "25.00 USD");
+        assert_eq!(
+            rates.convert(&parse("16 gbp to usd").unwrap()).unwrap(),
+            "25.00 USD"
+        );
         assert_eq!(rates.convert(&parse("10 xyz to usd").unwrap()), None);
 
         // Three-letter unit names are units, not currencies.

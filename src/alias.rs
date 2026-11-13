@@ -80,7 +80,10 @@ mod tests {
 
     #[test]
     fn command_aliases_quote_their_arguments() {
-        assert_eq!(expand("kitty -e htop", ""), AliasTarget::Command("kitty -e htop".into()));
+        assert_eq!(
+            expand("kitty -e htop", ""),
+            AliasTarget::Command("kitty -e htop".into())
+        );
         assert_eq!(
             expand("code", "my project"),
             AliasTarget::Command("code 'my' 'project'".into())

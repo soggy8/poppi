@@ -324,3 +324,42 @@ window.poppi-launcher {
     outline: 2px solid {{error}};
     outline-offset: -2px;
 }
+
+.poppi-launcher button.mic-button {
+    background: none;
+    background-color: transparent;
+    border: none;
+    border-radius: 99px;
+    box-shadow: none;
+    outline: none;
+    min-height: 26px;
+    min-width: 26px;
+    padding: 2px;
+    margin-left: 6px;
+    color: alpha({{text}}, 0.45);
+    transition: background-color 0.1s ease, color 0.1s ease;
+}
+
+.poppi-launcher button.mic-button:hover {
+    background-color: alpha({{text}}, 0.1);
+    color: {{text}};
+}
+
+.poppi-launcher button.mic-button.recording {
+    background-color: alpha({{error}}, 0.18);
+    color: {{error}};
+    animation: poppi-listening 1.2s ease-in-out infinite;
+}
+
+/* Dictated text is provisional until the final pass. */
+.poppi-launcher .search-bar entry.dictating {
+    color: alpha({{text}}, 0.6);
+}
+
+.poppi-launcher button.mic-button.transcribing {
+    color: {{accent}};
+}
+
+@keyframes poppi-listening {
+    50% { background-color: alpha({{error}}, 0.06); }
+}

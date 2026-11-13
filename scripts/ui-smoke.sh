@@ -66,6 +66,10 @@ roots = ["$home"]
 [aliases]
 gh = "https://github.com/search?q={}"
 
+[voice]
+# Stands in for whisper-cli; POPPI_UI_RECORDER stands in for the microphone.
+command = "echo ' Lock screen.'"
+
 [ai]
 default = "haiku"
 
@@ -141,6 +145,12 @@ else
         "<wait>"                             # 28
         "g PoppiSecret"                      # 29
         "<wait>"                             # 30
+        ""                                   # 31
+        "<ctrl-d>"                           # 32
+        "<key-enter>"                        # 33
+        "<wait>"                             # 34
+        "<ctrl-d>"                           # 35
+        "<escape>"                           # 36
     )
 fi
 steps+=("poppi settings" "<enter>")
@@ -155,6 +165,7 @@ compositor=\$!
 sleep 2
 WAYLAND_DISPLAY=poppi-ui-test DISPLAY= GTK_A11Y=none \
 XDG_CONFIG_HOME="$work/config" XDG_STATE_HOME="$work/state" XDG_CACHE_HOME="$work/cache" \
+POPPI_UI_RECORDER="head -c 64000 /dev/zero; exec sleep 30" \
 POPPI_UI_SCRIPT='$script' POPPI_UI_SHOTS='$shots' POPPI_UI_STEP_MS=$step_ms \
     timeout 120 "$bin" >"$log" 2>&1
 status=\$?
@@ -217,6 +228,10 @@ else
     expect 26 "timezone conversion"                    'mode="Calculator" results=1 first=calc'
     expect 28 "custom list script returns rows"        'mode="Script" results=1 first=script-item'
     expect 30 "file content search finds line"         'mode="Files" results=1 first=grep'
+    expect 32 "Ctrl+D starts listening"                'voice=recording'
+    expect 34 "dictated text lands in the search bar"  'query="Lock screen" .*first=system .*voice=idle'
+    expect 35 "Ctrl+D listens again"                   'voice=recording'
+    expect 36 "Escape cancels without closing"         'query="Lock screen" .*visible=true .*voice=idle'
 fi
 expect $((last - 1)) "settings entry"            'mode="Settings" results=1 first=settings'
 expect "$last" "opening settings hides the launcher" 'visible=false'

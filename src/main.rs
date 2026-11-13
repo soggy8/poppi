@@ -24,6 +24,7 @@ mod ui;
 mod units;
 mod usage;
 mod utils;
+mod voice;
 mod window_switcher;
 
 use config::Config;

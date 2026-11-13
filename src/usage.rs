@@ -85,7 +85,8 @@ impl Usage {
     pub fn frecency_at(&self, id: &str, now: u64) -> f64 {
         match self.records.get(id) {
             Some(record) if record.count > 0 => {
-                (f64::from(record.count) + 1.0).ln() * recency_weight(now.saturating_sub(record.last))
+                (f64::from(record.count) + 1.0).ln()
+                    * recency_weight(now.saturating_sub(record.last))
             }
             _ => 0.0,
         }
@@ -102,7 +103,10 @@ impl Usage {
     }
 
     pub fn record(&mut self, id: &str) {
-        let record = self.records.entry(id.to_string()).or_insert(Record { count: 0, last: 0 });
+        let record = self
+            .records
+            .entry(id.to_string())
+            .or_insert(Record { count: 0, last: 0 });
         record.count += 1;
         record.last = now();
         if let Err(e) = self.save() {
@@ -145,8 +149,20 @@ mod tests {
     fn recent_use_outranks_old_habits() {
         let mut usage = Usage::load_from(None);
         let now = 1_000 * DAY;
-        usage.records.insert("old".into(), Record { count: 40, last: now - 200 * DAY });
-        usage.records.insert("new".into(), Record { count: 8, last: now - DAY });
+        usage.records.insert(
+            "old".into(),
+            Record {
+                count: 40,
+                last: now - 200 * DAY,
+            },
+        );
+        usage.records.insert(
+            "new".into(),
+            Record {
+                count: 8,
+                last: now - DAY,
+            },
+        );
         assert!(usage.frecency_at("new", now) > usage.frecency_at("old", now));
         // Still remembered, just weaker.
         assert!(usage.frecency_at("old", now) > 0.0);
@@ -155,7 +171,8 @@ mod tests {
 
     #[test]
     fn counts_persist_and_old_format_loads() {
-        let path = std::env::temp_dir().join(format!("poppi-usage-test-{}.json", std::process::id()));
+        let path =
+            std::env::temp_dir().join(format!("poppi-usage-test-{}.json", std::process::id()));
         std::fs::write(&path, r#"{"legacy.desktop": 7}"#).unwrap();
 
         let mut usage = Usage::load_from(Some(path.clone()));

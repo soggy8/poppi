@@ -23,6 +23,25 @@ impl Launcher {
         let ctrl = modifiers.contains(gdk::ModifierType::CONTROL_MASK);
         let shift = modifiers.contains(gdk::ModifierType::SHIFT_MASK);
 
+        // While dictating, Enter finishes and Escape cancels.
+        if self.dictating() {
+            match key {
+                gdk::Key::Escape => {
+                    self.cancel_dictation();
+                    return glib::Propagation::Stop;
+                }
+                gdk::Key::Return | gdk::Key::KP_Enter => {
+                    self.finish_dictation();
+                    return glib::Propagation::Stop;
+                }
+                _ => {}
+            }
+        }
+        if ctrl && !alt && !shift && matches!(key, gdk::Key::d | gdk::Key::D) {
+            self.toggle_dictation();
+            return glib::Propagation::Stop;
+        }
+
         if answer_mode && !alt && self.on_chat_key(key, ctrl, shift) {
             return glib::Propagation::Stop;
         }

@@ -20,6 +20,7 @@ pub struct Config {
     pub claude: Option<LegacyClaudeConfig>,
     pub clipboard: ClipboardConfig,
     pub emoji: EmojiConfig,
+    pub voice: VoiceConfig,
     /// Keyword -> URL or command. `{}` is replaced by the typed arguments.
     pub aliases: BTreeMap<String, String>,
 }
@@ -97,6 +98,31 @@ impl Default for ClipboardConfig {
         Self {
             enabled: true,
             size: 30,
+        }
+    }
+}
+
+/// Dictation into the search bar (Ctrl+D or the microphone button).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct VoiceConfig {
+    pub enabled: bool,
+    /// Turns a recording into text: `{file}` is a 16 kHz mono WAV file and
+    /// the text is read from stdout. Empty uses whisper.cpp's `whisper-cli`.
+    pub command: String,
+    /// whisper.cpp model (`ggml-*.bin`) used when `command` is empty.
+    pub model: String,
+    /// Spoken language code for whisper-cli ("en", "de", …) or "auto".
+    pub language: String,
+}
+
+impl Default for VoiceConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            command: String::new(),
+            model: "~/.local/share/poppi_launcher/ggml-base.en.bin".to_string(),
+            language: "auto".to_string(),
         }
     }
 }

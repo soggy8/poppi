@@ -80,6 +80,9 @@ fn perform(launcher: &Rc<Launcher>, step: &str) {
         "<escape>" => press(gdk::Key::Escape, none),
         "<ctrl-c>" => press(gdk::Key::c, gdk::ModifierType::CONTROL_MASK),
         "<ctrl-k>" => press(gdk::Key::k, gdk::ModifierType::CONTROL_MASK),
+        "<ctrl-d>" => press(gdk::Key::d, gdk::ModifierType::CONTROL_MASK),
+        // Enter as a key press, not as running the selected result.
+        "<key-enter>" => press(gdk::Key::Return, none),
         "<ctrl-shift-c>" => press(
             gdk::Key::C,
             gdk::ModifierType::CONTROL_MASK | gdk::ModifierType::SHIFT_MASK,
@@ -126,7 +129,7 @@ fn report(launcher: &Rc<Launcher>, index: usize, step: &str, shots: Option<&str>
         .unwrap_or("none");
     let adjustment = launcher.scrolled.vadjustment();
     eprintln!(
-        "UI-TEST step={} do={:?} query={:?} mode={:?} results={} first={} selected={} chat={} visible={} size={}x{} scroll={:.0}/{:.0}/{:.0}",
+        "UI-TEST step={} do={:?} query={:?} mode={:?} results={} first={} selected={} chat={} visible={} size={}x{} scroll={:.0}/{:.0}/{:.0} voice={}",
         index,
         step,
         launcher.entry.text(),
@@ -141,6 +144,11 @@ fn report(launcher: &Rc<Launcher>, index: usize, step: &str, shots: Option<&str>
         adjustment.value(),
         adjustment.page_size(),
         adjustment.upper(),
+        match launcher.dictation.borrow().phase {
+            super::dictation::Phase::Idle => "idle",
+            super::dictation::Phase::Recording(_) => "recording",
+            super::dictation::Phase::Transcribing => "transcribing",
+        },
     );
     if let Some(dir) = shots {
         if launcher.window.is_visible() {

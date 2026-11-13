@@ -370,6 +370,25 @@ impl SettingsWindow {
                 .unwrap_or(0),
         );
 
+        section(&main_box, "Voice input");
+        let voice_enabled = check(
+            &main_box,
+            "Dictate into the search bar (Ctrl+D or the microphone button)",
+            current.voice.enabled,
+        );
+        let voice_status = {
+            let mut voice = current.voice.clone();
+            voice.enabled = true;
+            match crate::voice::unavailable_reason(&voice) {
+                Some(reason) => format!("Not ready: {}. See the README for setup.", reason),
+                None if voice.command.trim().is_empty() => {
+                    "Ready: whisper.cpp turns speech into text on this computer.".to_string()
+                }
+                None => "Ready: using the speech-to-text command from the config file.".to_string(),
+            }
+        };
+        hint(&main_box, &voice_status);
+
         main_box = page(&stack, "aliases", "Aliases");
         hint(
             &main_box,
@@ -510,6 +529,7 @@ impl SettingsWindow {
                 config.files.include_hidden = files_hidden.is_active();
                 config.files.respect_gitignore = files_gitignore.is_active();
                 config.clipboard.enabled = clipboard_enabled.is_active();
+                config.voice.enabled = voice_enabled.is_active();
                 config.emoji.skin_tone = SKIN_TONES
                     .get(skin_tone.selected() as usize)
                     .copied()

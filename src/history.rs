@@ -121,7 +121,8 @@ mod tests {
 
     #[test]
     fn persists_and_clears() {
-        let path = std::env::temp_dir().join(format!("poppi-history-test-{}.json", std::process::id()));
+        let path =
+            std::env::temp_dir().join(format!("poppi-history-test-{}.json", std::process::id()));
         let _ = std::fs::remove_file(&path);
 
         let mut history = History::load_from(Some(path.clone()), 10);
@@ -133,7 +134,9 @@ mod tests {
         );
 
         history.clear();
-        assert!(History::load_from(Some(path.clone()), 10).entries().is_empty());
+        assert!(History::load_from(Some(path.clone()), 10)
+            .entries()
+            .is_empty());
         let _ = std::fs::remove_file(&path);
     }
 }
