@@ -162,8 +162,9 @@ pub const PROVIDERS: &[Provider] = &[
         "Groq",
         "https://api.groq.com/openai/v1",
         "GROQ_API_KEY",
-        "llama-3.3-70b-versatile",
-        "llama-3.3-70b-versatile, openai/gpt-oss-120b",
+        // Groq's free plan dropped Llama; gpt-oss is on it.
+        "openai/gpt-oss-120b",
+        "openai/gpt-oss-120b, openai/gpt-oss-20b",
     ),
     api(
         "deepseek",
@@ -588,7 +589,7 @@ mod tests {
         for name in config.models.keys() {
             resolve(&config, Some(name)).unwrap();
         }
-        assert_eq!(resolve(&config, None).unwrap().name, "haiku");
+        assert_eq!(resolve(&config, None).unwrap().name, "groq");
         assert_eq!(label(&config, "missing"), "missing");
     }
 }

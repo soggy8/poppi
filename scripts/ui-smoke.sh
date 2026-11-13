@@ -153,7 +153,7 @@ else
         "<escape>"                           # 36
     )
 fi
-steps+=("poppi settings" "<enter>")
+steps+=("setup" "<enter>" "<wait>" "poppi settings" "<enter>")
 script=$(IFS='|'; echo "${steps[*]}")
 
 log="$work/ui.log"
@@ -233,6 +233,8 @@ else
     expect 35 "Ctrl+D listens again"                   'voice=recording'
     expect 36 "Escape cancels without closing"         'query="Lock screen" .*visible=true .*voice=idle'
 fi
+expect $((last - 4)) "typing setup offers the setup"      'mode="Apps" results=1 first=setup'
+expect $((last - 3)) "opening the setup hides the launcher" 'visible=false'
 expect $((last - 1)) "settings entry"            'mode="Settings" results=1 first=settings'
 expect "$last" "opening settings hides the launcher" 'visible=false'
 if grep -q "^UI-TEST done" "$log"; then

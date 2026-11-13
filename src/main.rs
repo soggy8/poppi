@@ -16,6 +16,8 @@ mod rows;
 mod scripts;
 mod search;
 mod settings;
+mod setup;
+mod shortcut;
 mod state;
 mod style;
 mod system;
@@ -112,6 +114,8 @@ fn main() -> glib::ExitCode {
         None => false,
     };
 
+    // No config file yet: the first time Poppi is opened, show the setup.
+    let first_run = Cell::new(!Config::config_path().exists());
     let (config, config_error) = Config::load();
     if let Some(error) = &config_error {
         eprintln!("{}", error);
@@ -160,6 +164,8 @@ fn main() -> glib::ExitCode {
     app.connect_activate(move |app| {
         if skip_initial_show.replace(false) {
             ui::warm_up(app, &config, config_error.as_deref());
+        } else if first_run.replace(false) {
+            setup::open(app, config.clone());
         } else {
             ui::activate(app, &config, config_error.as_deref());
         }

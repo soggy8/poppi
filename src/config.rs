@@ -259,6 +259,7 @@ impl ModelConfig {
 impl Default for AiConfig {
     fn default() -> Self {
         let models = [
+            ("groq", ModelConfig::new("groq", "")),
             ("haiku", ModelConfig::new("claude", "haiku")),
             ("sonnet", ModelConfig::new("claude", "sonnet")),
             ("opus", ModelConfig::new("claude", "opus")),
@@ -271,7 +272,9 @@ impl Default for AiConfig {
         .collect();
         Self {
             enabled: true,
-            default: "haiku".to_string(),
+            // Free with an API key from console.groq.com; the first-run
+            // setup explains this and offers the alternatives.
+            default: "groq".to_string(),
             system_prompt: DEFAULT_SYSTEM_PROMPT.to_string(),
             models,
         }
@@ -289,6 +292,9 @@ pub struct LegacyClaudeConfig {
 }
 
 /// A model name is typed as the first word, so it must be one word.
+/// The default model of configs written before 0.4.
+const LEGACY_DEFAULT_MODEL: &str = "haiku";
+
 pub fn is_valid_model_name(name: &str) -> bool {
     !name.is_empty()
         && name
@@ -320,9 +326,17 @@ impl Config {
     }
 
     pub fn parse(contents: &str) -> Result<Self, String> {
-        toml::from_str::<Config>(contents)
-            .map(Config::sanitized)
-            .map_err(|e| e.to_string())
+        let mut config = toml::from_str::<Config>(contents).map_err(|e| e.to_string())?;
+        // Files from before 0.4 never named a default model and got Claude
+        // Haiku; keep it rather than switching them to the new default.
+        let names_default = toml::from_str::<toml::Value>(contents)
+            .ok()
+            .and_then(|v| v.get("ai")?.get("default").cloned())
+            .is_some();
+        if !names_default && !contents.trim().is_empty() {
+            config.ai.default = LEGACY_DEFAULT_MODEL.to_string();
+        }
+        Ok(config.sanitized())
     }
 
     /// Clamp numeric values to ranges the UI can actually render.
@@ -349,8 +363,9 @@ impl Config {
             self.ai.models = AiConfig::default().models;
         }
         if !self.ai.models.contains_key(&self.ai.default) {
-            self.ai.default = if self.ai.models.contains_key("haiku") {
-                "haiku".to_string()
+            let fallback = AiConfig::default().default;
+            self.ai.default = if self.ai.models.contains_key(&fallback) {
+                fallback
             } else {
                 self.ai.models.keys().next().cloned().unwrap_or_default()
             };
@@ -534,13 +549,24 @@ mod tests {
     }
 
     #[test]
-    fn ai_defaults_to_haiku_on_the_subscription() {
+    fn ai_defaults_to_free_groq_and_old_files_keep_haiku() {
         let config = Config::default();
         assert!(config.ai.enabled);
-        assert_eq!(config.ai.default, "haiku");
+        assert_eq!(config.ai.default, "groq");
+        assert_eq!(config.ai.models["groq"], ModelConfig::new("groq", ""));
         assert_eq!(
             config.ai.models["haiku"],
             ModelConfig::new("claude", "haiku")
+        );
+        // A saved default round-trips; a file without one predates 0.4.
+        let saved = toml::to_string(&config).unwrap();
+        assert_eq!(Config::parse(&saved).unwrap().ai.default, "groq");
+        assert_eq!(
+            Config::parse("[theme]\nmode = \"dark\"\n")
+                .unwrap()
+                .ai
+                .default,
+            "haiku"
         );
         // Nothing secret is written by default.
         let text = toml::to_string(&config).unwrap().to_lowercase();

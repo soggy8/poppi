@@ -72,6 +72,11 @@ impl Launcher {
                 remember = false;
                 action.run()
             }
+            ResultItem::Setup => {
+                remember = false;
+                crate::setup::open(&self.app, self.config.clone());
+                Ok(())
+            }
             ResultItem::Settings => {
                 remember = false;
                 // Open first so the application always has a window.

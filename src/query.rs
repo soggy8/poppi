@@ -16,6 +16,7 @@ pub enum Intent {
         model: Option<String>,
     },
     Settings,
+    Setup,
     /// Window switcher with an optional filter.
     Windows(String),
     Search {
@@ -145,6 +146,9 @@ pub fn parse(query: &str, options: &ParseOptions) -> Intent {
 
     if strip_keyword(query, "poppi settings").is_some() {
         return Intent::Settings;
+    }
+    if strip_keyword(query, "poppi setup").is_some() {
+        return Intent::Setup;
     }
 
     // Aliases come first so they can shadow the built-in keywords.
@@ -539,6 +543,7 @@ mod tests {
     #[test]
     fn settings() {
         assert_eq!(p("poppi settings"), Intent::Settings);
+        assert_eq!(p("poppi setup"), Intent::Setup);
     }
 
     #[test]

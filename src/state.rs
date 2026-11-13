@@ -146,6 +146,8 @@ pub enum ResultItem {
         turns: Vec<Turn>,
     },
     Settings,
+    /// The first-run setup: AI service, shortcut, voice.
+    Setup,
     /// A message row; activating it does nothing.
     Info(String),
 }
@@ -717,6 +719,7 @@ impl LauncherState {
                 (Mode::Ai, vec![ask_item(config, &question, &model)])
             }
             Intent::Settings => (Mode::Settings, vec![ResultItem::Settings]),
+            Intent::Setup => (Mode::Settings, vec![ResultItem::Setup]),
             Intent::Windows(filter) => {
                 if matches!(self.windows, WindowList::NotLoaded) {
                     self.windows = WindowList::Loading;
@@ -1113,6 +1116,9 @@ impl LauncherState {
         if query.len() >= 3 && "poppi launcher settings".contains(&query.to_lowercase()) {
             items.push(ResultItem::Settings);
         }
+        if query.len() >= 3 && "poppi setup".contains(&query.to_lowercase()) {
+            items.push(ResultItem::Setup);
+        }
 
         // Apps always come first. A command on $PATH is offered after them,
         // or leads the list when nothing else matched.
@@ -1275,6 +1281,8 @@ mod tests {
         let mut s = state();
         s.update("settings", &Config::default());
         assert!(matches!(s.results.as_slice(), [ResultItem::Settings]));
+        s.update("setup", &Config::default());
+        assert!(matches!(s.results.as_slice(), [ResultItem::Setup]));
     }
 
     #[test]
@@ -1428,7 +1436,8 @@ mod tests {
     #[test]
     fn questions_build_a_conversation() {
         let mut s = state();
-        let config = Config::default();
+        let mut config = Config::default();
+        config.ai.default = "haiku".to_string();
 
         // First question: just the offer, and a request to warm up the CLI.
         let needs = s.update("what is rust?", &config);

@@ -41,6 +41,7 @@ fn kind(item: &ResultItem) -> &'static str {
         ResultItem::Ask { .. } => "ask",
         ResultItem::Transcript { .. } => "transcript",
         ResultItem::Settings => "settings",
+        ResultItem::Setup => "setup",
         ResultItem::Info(_) => "info",
     }
 }
@@ -155,8 +156,9 @@ fn report(launcher: &Rc<Launcher>, index: usize, step: &str, shots: Option<&str>
             screenshot(&launcher.window, &format!("{}/step{:02}.png", dir, index));
         }
         for window in launcher.app.windows() {
-            if window.widget_name() == "poppi-settings" {
-                screenshot(&window, &format!("{}/settings.png", dir));
+            let name = window.widget_name();
+            if let Some(page) = name.strip_prefix("poppi-") {
+                screenshot(&window, &format!("{}/{}.png", dir, page));
             }
         }
     }

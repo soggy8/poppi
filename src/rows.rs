@@ -326,6 +326,11 @@ impl RowSlot {
                     "Press Enter again to confirm, or keep typing to cancel",
                 ));
             }
+            ResultItem::Setup => {
+                self.apply_icon(IconSpec::Symbolic("emblem-system-symbolic"));
+                self.apply_title("Set up Poppi", context, false, false, false);
+                self.apply_subtitle(Some("AI service and key, keyboard shortcut, voice"));
+            }
             ResultItem::Settings => {
                 self.apply_icon(IconSpec::Symbolic("preferences-system-symbolic"));
                 self.apply_title("Poppi Launcher Settings", context, false, false, false);
@@ -876,7 +881,7 @@ pub fn hints(
                 ]
             }
             ResultItem::Transcript { .. } => vec![("↵", "Copy answer"), ("↑↓", "Scroll")],
-            ResultItem::Settings => vec![("↵", "Open")],
+            ResultItem::Settings | ResultItem::Setup => vec![("↵", "Open")],
             ResultItem::Info(_) => Vec::new(),
         },
     };

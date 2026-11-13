@@ -15,7 +15,7 @@
 
 mod claude_cli;
 mod command;
-mod http;
+pub mod http;
 pub mod providers;
 
 pub use providers::{Kind, Resolved};

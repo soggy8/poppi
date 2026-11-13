@@ -25,7 +25,7 @@ const THEME_MODES: [(&str, &str); 3] = [
 
 pub struct SettingsWindow;
 
-fn section(parent: &GtkBox, title: &str) {
+pub(crate) fn section(parent: &GtkBox, title: &str) {
     let label = Label::new(Some(title));
     label.set_halign(gtk::Align::Start);
     label.add_css_class("section-title");
@@ -50,7 +50,7 @@ fn page(stack: &gtk::Stack, name: &str, title: &str) -> GtkBox {
     content
 }
 
-fn hint(parent: &GtkBox, text: &str) -> Label {
+pub(crate) fn hint(parent: &GtkBox, text: &str) -> Label {
     let label = Label::new(Some(text));
     // Fill the page width and wrap there, rather than at the label's own
     // (narrow) natural width.

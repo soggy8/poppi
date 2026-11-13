@@ -14,7 +14,7 @@ const MAX_TOKENS: u32 = 4096;
 pub fn job(model: &Resolved, history: &[Message], question: &str) -> Result<Job, String> {
     let key = model.key.resolve();
     if key.is_none() && model.needs_key {
-        let mut ways = vec!["add one in Poppi's settings".to_string()];
+        let mut ways = vec!["type \"setup\" in Poppi to add one".to_string()];
         if let Some(env) = &model.key.env {
             ways.push(format!("set {}", env));
         }
@@ -98,11 +98,15 @@ pub fn request(
             json!({ "role": "system", "content": model.system_prompt }),
         );
     }
-    let body = json!({
+    let mut body = json!({
         "model": model.model,
         "messages": messages,
         "stream": true,
     });
+    // gpt-oss thinks before answering; a launcher wants the answer quickly.
+    if model.model.starts_with("openai/gpt-oss") {
+        body["reasoning_effort"] = json!("low");
+    }
     (
         format!("{}/chat/completions", model.base_url),
         headers,
@@ -140,6 +144,59 @@ pub fn curl_config(url: &str, headers: &[(String, String)], body: &str) -> Strin
     }
     config.push_str(&format!("data-binary = {}\n", quote(body)));
     config
+}
+
+/// GET a JSON document, sending `key` as a bearer token through curl's
+/// stdin like every other request. Blocking.
+pub fn get_json(url: &str, key: Option<&str>) -> Result<Value, String> {
+    let mut config = format!("url = {}\n", quote(url));
+    if let Some(key) = key {
+        let key: String = key.chars().filter(|c| !c.is_control()).collect();
+        config.push_str(&format!(
+            "header = {}\n",
+            quote(&format!("Authorization: Bearer {}", key))
+        ));
+    }
+    let mut child = Command::new("curl")
+        .args([
+            "--silent",
+            "--show-error",
+            "--fail-with-body",
+            "--connect-timeout",
+            "10",
+            "--max-time",
+            "20",
+            "--config",
+            "-",
+        ])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("Could not run curl: {}", e))?;
+    if let Some(mut stdin) = child.stdin.take() {
+        use std::io::Write;
+        let _ = stdin.write_all(config.as_bytes());
+    }
+    let output = child
+        .wait_with_output()
+        .map_err(|e| format!("curl failed: {}", e))?;
+    let body = String::from_utf8_lossy(&output.stdout);
+    let value: Option<Value> = serde_json::from_str(&body).ok();
+    if output.status.success() {
+        return value.ok_or_else(|| "Unexpected answer from the server".to_string());
+    }
+    Err(value
+        .as_ref()
+        .and_then(error_message)
+        .or_else(|| {
+            String::from_utf8_lossy(&output.stderr)
+                .lines()
+                .rev()
+                .find(|l| !l.trim().is_empty())
+                .map(|l| l.trim().trim_start_matches("curl: ").to_string())
+        })
+        .unwrap_or_else(|| "The server refused the request".to_string()))
 }
 
 /// The message in an error body, in any of the shapes APIs use.
