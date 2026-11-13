@@ -13,7 +13,7 @@ poppi_launcher/
 │   │   ├── keys.rs         # Keyboard handling
 │   │   ├── activate.rs     # Running the selected result
 │   │   ├── chat.rs         # AI conversation lifecycle, streaming, cancellation
-│   │   ├── dictation.rs    # Voice input into the search bar
+│   │   ├── dictation.rs    # Dictation, wake word handling, hands-free runs
 │   │   └── smoke.rs        # Scripted UI driver (feature "ui-test" only)
 │   ├── ai/
 │   │   ├── mod.rs          # Session, Event channel, one-shot job runner
@@ -37,6 +37,12 @@ poppi_launcher/
 │   ├── emoji_picker.rs     # Emoji search and insertion
 │   ├── clipboard.rs        # In-memory clipboard history
 │   ├── voice.rs            # Microphone recording and speech-to-text
+│   ├── wake.rs             # Voice activity detection, "Poppi" wake word listener
+│   ├── actions.rs          # [[action: arg]] markers the AI proposes, its prompt
+│   ├── context.rs          # Selected text / clipboard sent with "explain this"
+│   ├── reminders.rs        # Reminder time parsing and store, notes file
+│   ├── setup.rs            # First-run setup: AI service and key, shortcut, voice
+│   ├── shortcut.rs         # GNOME custom shortcut and clash detection, autostart
 │   ├── system.rs           # Lock, suspend, log out, restart, power off
 │   ├── history.rs          # Past queries (also recent emojis)
 │   ├── alias.rs            # User-defined aliases
@@ -67,15 +73,17 @@ poppi_launcher/
    window. Failures are shown as a row instead of closing silently.
 
 Parse order: questions (a trailing `?`), settings, aliases, configured model
-names, `ask`/`ai`, clipboard, history, window switcher, web search prefixes,
+names, `ask`/`ai`, clipboard, history, `reminders`/`remind`/`note`, window
+switcher, web search prefixes,
 emoji, file search, typed paths, terminal prefixes, conversions, arithmetic,
 then application search. While an AI conversation is open it takes precedence
 over all of these: anything typed is a follow-up (or `<model> <follow-up>` to
 switch models mid-chat).
 
 In application search, apps come first; system actions follow (or lead when
-the query is exactly their name), then a `$PATH` command, and web searches
-only when nothing else matched.
+the query is exactly their name), then a `$PATH` command; when nothing else
+matched, a request of three or more words is offered to the AI, then web
+searches.
 
 ## Process Model
 
@@ -206,6 +214,39 @@ refreshes an open launcher. Installed desktop applications are watched via
 ### Configuration (`config.rs`)
 - `#[serde(default)]` on every struct: missing keys use defaults, unknown keys
   are ignored, numbers are clamped. Parse errors are reported, not swallowed.
+
+### AI actions (`actions.rs`)
+
+Every model gets a system prompt saying it may end an answer with
+`[[action: argument]]` lines. `actions::split` takes them out of the text
+shown (leaving code blocks and bash `[[ ]]` alone, and hiding a marker that
+is still streaming) and returns them; `LauncherState` turns each into a row
+under the transcript, reusing the App, Search, Terminal and System rows
+where one exists, so they look and run like everything else. Nothing runs
+without Enter, except harmless ones for a spoken request (below). Plain
+text markers work with every provider, including CLIs and small local
+models, unlike each API's own tool-calling format.
+
+### Voice (`voice.rs`, `wake.rs`, `ui/dictation.rs`)
+
+The recorder (`pw-record` or `arecord`) streams 16 kHz mono PCM into memory.
+Dictation re-transcribes the audio so far with fast greedy settings and a
+narrowed whisper encoder window (`-ac`) about twice a second, then makes a
+beam-search pass on Enter. The wake word listener runs the same recorder
+continuously through a small energy-based voice activity detector; only
+stretches of speech are transcribed (primed with the name's spelling via
+`--prompt`), on a separate thread that keeps just the newest clip. A match
+opens the launcher in hands-free mode, where apps, windows, files, web
+searches, reminders, notes, asking the AI and the AI's open/find/switch
+proposals run without Enter.
+
+### First-run setup (`setup.rs`, `shortcut.rs`)
+
+Shown on the first activation when no config file existed, and for the
+`setup` keyword. It writes `ai.default` (configs without one predate it and
+keep Claude Haiku), stores the key in the keyring after a test request, binds
+the GNOME custom shortcut (warning about built-in and custom shortcuts on the
+same keys) and writes an XDG autostart entry.
 
 ## Testing
 

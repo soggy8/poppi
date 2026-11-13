@@ -7,32 +7,32 @@
 ![License](https://img.shields.io/badge/License-MIT-green)
 ![Platform](https://img.shields.io/badge/Platform-Linux-lightgrey?logo=linux)
 
-**A fast, modern, and customizable application launcher for GNOME desktop environment**
+**A launcher and a small assistant for the Linux desktop: open anything, ask anything, and say "Poppi" to do it hands-free.**
 
-Inspired by Albert launcher, built with Rust and GTK4 for optimal performance
+Spotlight's speed, Albert's power-user features and a voice assistant in one bar. Built with Rust and GTK4.
 
-[Features](#-features) • [Installation](#-installation) • [Usage](#-usage) • [Configuration](#-configuration) • [Contributing](#-contributing)
+[Features](#-features) • [Installation](#-installation) • [Usage](#-usage) • [Privacy](#-privacy) • [Configuration](#-configuration) • [Contributing](#-contributing)
 
 </div>
+
+<p align="center">
+  <img src="docs/screenshots/ai-actions.png" width="600" alt="Poppi answering a request with actions to run">
+</p>
 
 ---
 
 ## ✨ Features
 
-- **🎯 Applications**: Fuzzy search over installed apps (Flatpak and Snap included), with matched letters highlighted. Apps you use often and recently rank first and are listed as soon as the launcher opens, kept live as apps are installed or removed. App actions such as "New Private Window" are searchable too
-- **📁 Files**: Find files by name (`f report`), recently changed ones first, skipping `.gitignore` noise, or browse by typing a path (`~/Doc`, Tab to complete)
-- **🪟 Window Switcher**: Switch between open windows, most recently used first, shown with their app icons (`sw`)
-- **🔢 Calculator and conversion**: `2+2`, `sqrt(16)`, `5 km in miles`, `100 f to c`, `20 usd in eur`
-- **🤖 Ask AI**: End your text with `?` (or start with a model name like `sonnet`, `llama`, `gemini`, `codex`) and stream an answer right inside the launcher, with follow-up turns and one-key code copying. Works with CLI subscriptions (Claude Code, Gemini CLI, Codex), local servers (Ollama, LM Studio), cloud APIs (OpenAI, Anthropic, Gemini, OpenRouter, Mistral, Groq, DeepSeek, xAI, …) and custom commands
-- **😀 Emoji Picker**: Search emojis, recents first, with your skin tone (`:` or `emoji`)
-- **📋 Clipboard history**: `clip` lists recently copied texts
-- **⏻ System actions**: `lock`, `suspend`, `log out`, `restart`, `power off`
-- **💻 Terminal Commands**: `> ls -la` runs a command in your terminal
-- **🌐 Web Search**: YouTube (`yt`), ChatGPT (`gpt`), Google (`google`), DuckDuckGo (`ddg`)
-- **🔗 Aliases**: Your own keywords for commands and URLs, which doubles as custom search engines
-- **🕘 History**: Step back through past queries with Alt+Up, or list them with `history`
-- **🎨 Themes**: Dark, light or follow the system, with your own colors, radius and size; changes apply live
-- **⚡ Instant**: Stays resident after the first start, so the shortcut toggles the window immediately
+- **🎯 Apps, files and windows**: fuzzy, typo-tolerant app search (Flatpak and Snap included), file search by name (`f report`) or path (`~/Doc`, Tab completes), content search (`g TODO`), and a window switcher (`sw`) that works on GNOME, Hyprland, Sway, Niri and X11
+- **🤖 An AI that does things**: end a question with `?`, or just say what you want ("open my downloads folder"). Answers stream in the bar, and anything the AI offers to do (open an app, a file or a site, find files, switch windows, search the web, run a command, set a reminder) appears as a row you run with Enter
+- **🆓 Free by default**: uses [Groq](https://console.groq.com)'s free plan out of the box (about 1,000 questions a day, no credit card); the first-run setup explains it and links to the free key. Or OpenRouter's free models, the Gemini API, Ollama on your own computer, or your Claude Code subscription
+- **🎙️ Voice**: Ctrl+D dictates into the bar with live transcription. Optionally, say **"Poppi, open Firefox"** to do things hands-free. Speech is recognized on your computer by whisper.cpp
+- **📝 "Explain this"**: ask about the text you have selected in any app, or what is on your clipboard
+- **⏰ Reminders and notes**: `remind me in 10 minutes to check the oven`, `remind at 15:30 call Ana`, `note buy milk`
+- **🔢 Calculator and conversions**: `2+2`, `sqrt(16)`, `5 km in miles`, `20 usd in eur`, `3pm est in cet`, `#4a9eff`
+- **😀 Emoji, 📋 clipboard history, ⏻ system actions, 💻 terminal commands, 🌐 web search, 🔗 aliases, 🕘 history and 🧩 script extensions**
+- **🎨 Themes**: dark, light or follow the system, with your own colors; changes apply live
+- **⚡ Instant**: stays resident, so the shortcut opens it immediately
 
 ## 🛠️ Installation
 
@@ -75,6 +75,12 @@ make install            # installs to ~/.local; use PREFIX=/usr/local for system
 
 This installs the binary, the desktop entry and the icon. `make uninstall` removes them. Make sure `~/.local/bin` is on your `PATH`.
 
+The first time you run `poppi_launcher`, a short setup opens: pick how questions are answered (Groq's free API is preselected, with a link to get a free key and a button to test it), set the keyboard shortcut (it warns if the keys are already taken), and check voice input. Type `setup` in Poppi to come back to it later.
+
+<p align="center">
+  <img src="docs/screenshots/setup.png" width="480" alt="The first-run setup">
+</p>
+
 On Sway, Hyprland, Niri or KDE, build with layer-shell support so the launcher opens as an overlay near the top of the screen instead of being tiled like a normal window. It needs the `gtk4-layer-shell` library (`gtk4-layer-shell-devel` on Fedora, `libgtk4-layer-shell-dev` on Debian/Ubuntu, `gtk4-layer-shell` on Arch):
 
 ```bash
@@ -85,7 +91,7 @@ The same binary still works on GNOME, which has no layer-shell; there it opens a
 
 ### Keyboard shortcut
 
-Poppi does not grab a global key itself; bind one in your desktop. On GNOME:
+The setup sets this for you on GNOME. Poppi does not grab a global key itself, so elsewhere bind one in your desktop's keyboard settings to the command `poppi_launcher`. From a terminal on GNOME:
 
 ```bash
 scripts/setup-gnome-shortcut.sh '<Control>space'
@@ -123,6 +129,7 @@ The chip on the right of the search bar names the mode your text is in, and the 
 | Escape / Ctrl+C | While AI is answering: stop generation without closing |
 | Backspace on an empty bar | Leave an AI conversation |
 | Ctrl+D | Dictate into the search bar; Enter (or Ctrl+D) finishes, Escape cancels |
+| Enter, Tab, Alt+1 … | Under an AI answer: run, move between and pick the actions it offers |
 | Escape | Close the launcher |
 
 ### Search Modes
@@ -165,7 +172,11 @@ The chip on the right of the search bar names the mode your text is in, and the 
 
 12. **History**: `history` lists past queries (Enter puts one back in the bar), `history yt` filters, `history clear` forgets them. App launches and window switches are not recorded.
 
-13. **Settings**: `poppi settings`, or just `settings`
+13. **Reminders**: `remind 10m tea`, `remind me in an hour to stretch`, `remind me at 3pm to call Ana`, `remind me to check the oven in 10 minutes`. A desktop notification shows when it is due; `reminders` lists them (Enter cancels one). Reminders are saved, so one that comes due while Poppi is not running shows as missed when it starts.
+
+14. **Notes**: `note buy milk` adds a timestamped line to `~/Documents/Poppi notes.md`; `note` alone opens the file.
+
+15. **Settings and setup**: `settings`, `setup`
 
 ### Voice input
 
@@ -186,6 +197,17 @@ Speech is turned into text on your computer by [whisper.cpp](https://github.com/
 
 The microphone button appears once everything is in place; Settings → Features shows what is missing otherwise. Any other speech-to-text tool works too: set `[voice] command` to a shell command that reads the WAV file `{file}` and prints the text. Such a command runs once, after you finish speaking, since it may be slow or a service billed per call.
 
+### Saying "Poppi"
+
+Turn on **Say "Poppi" to open it** in the setup or in Settings → Features, and Poppi listens for its name while it runs in the background:
+
+- **"Poppi, open Firefox"**, **"Poppi, what's the capital of Peru?"**, **"Poppi, remind me in ten minutes to check the oven"**: it opens with your words and gets on with it.
+- **"Poppi"** on its own opens it and listens; it stops when you pause.
+
+Asked by voice, harmless things happen without a key press: opening apps, files, folders and websites, switching windows, searching, setting reminders and notes, and asking the AI. Commands, copying and power actions still wait for Enter.
+
+How it works: the microphone is read continuously, but a simple voice detector only passes on stretches of speech, and only those short clips are transcribed (with whisper.cpp, on your computer). Nothing is recorded or kept, and GNOME's microphone indicator shows while it listens. It is off until you turn it on, and needs Poppi to stay running in the background (the setup can start it at login).
+
 ### Asking AI
 
 Anything ending with a question mark goes to your default AI model (so does anything after `ask ` or `ai `). Prefix a question with any configured model name to ask that model directly:
@@ -199,19 +221,33 @@ llama write a haiku about GTK
 
 Press Enter to send it. The answer streams in place inside the launcher, with prose, bold/italic text, lists, and fenced code blocks rendered. Each code block has its own Copy button, or press `Ctrl+Shift+C` to copy the latest code block immediately.
 
+**Doing things.** Say what you want and the AI answers with actions to run: "open my downloads folder", "find my tax return from last year", "lock the screen", "show me disk usage" (runs `df -h` in a terminal). They appear as rows under the answer, the first one highlighted: press Enter to run it, Tab or Alt+1…9 to pick another. Nothing runs by itself, and power actions still ask twice. A request of three or more words that matches nothing else offers the AI first, so no question mark is needed.
+
+**About a text.** Select text in any app, open Poppi and ask about "this": `explain this?`, `translate the selected text to German`, `summarize my clipboard`. The text is sent along only when your question refers to it, and the row says so before you press Enter.
+
 After the first answer you are in a conversation: whatever you type next is a follow-up (with or without `?`), and you can switch models mid-conversation by starting a turn with another model's name (e.g. `opus refine that`). Up/Down scroll, `Escape` or `Ctrl+C` stops a streaming answer without closing, Enter on an empty bar copies the latest answer, Backspace on an empty bar goes back to normal search, and closing the launcher ends the conversation.
 
-**Providers.** Configure models in `settings` → **AI models** or under `[ai.models.<name>]`:
+**Providers.** The setup configures the default; more models can be added in `settings` → **AI models** or under `[ai.models.<name>]`:
 
 - **CLI subscriptions (no API key needed)**:
   - `claude`: uses [Claude Code](https://claude.com/claude-code) (`claude` → `/login`) on your Pro/Max subscription. Runs with all tools, MCP servers and session persistence disabled, and strips `ANTHROPIC_API_KEY` from the child environment so exported keys are never billed. Pre-warmed as you type.
   - `gemini-cli`: uses Google's `gemini` CLI login.
   - `codex`: uses OpenAI's `codex` CLI login in a read-only sandbox.
 - **Local servers (no API key needed)**: `ollama` (`http://localhost:11434/v1`), `lmstudio` (`http://localhost:1234/v1`), or `openai-compatible` (any custom `base_url`).
+- **Free cloud APIs**: `groq` (the default; free plan, key from console.groq.com), `openrouter` (its `:free` models), `gemini` (free tier; Google may use free-tier prompts to improve its products).
 - **Cloud APIs**: `openai`, `anthropic`, `gemini`, `openrouter`, `mistral`, `groq`, `deepseek`, `xai`, `perplexity`, `together`, `fireworks`, `cerebras`. Requests stream via `curl` with headers/keys passed over `stdin` so secrets never appear on a command line.
 - **Custom commands**: `command` pipes the prompt on `stdin` to any shell command (e.g. `llm -m gpt-4o`) and streams `stdout`.
 
 **API keys.** Checked in order: GNOME keyring (saved from the Settings window via `secret-tool`), the provider's environment variable (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `OPENROUTER_API_KEY`, … or `api_key_env`), or `api_key` in `config.toml` (which restricts the file to `0600`). Older `[claude]` sections are migrated automatically.
+
+## 🔒 Privacy
+
+What leaves your computer, and when:
+
+- **Questions to the AI** go to the service you chose (Groq by default) over its API, with the earlier turns of the conversation and, if your question asks about it, your selected text or clipboard. Pick Ollama in the setup to keep everything local.
+- **Speech** never leaves: dictation and the wake word use whisper.cpp on your computer. Audio is held in memory and dropped once transcribed.
+- **Exchange rates** for currency conversion are downloaded from frankfurter.dev (turn off with `currency = false`).
+- **Nothing else**: no telemetry, no accounts. API keys are kept in the GNOME keyring.
 
 ## ⚙️ Configuration
 
@@ -246,8 +282,11 @@ currency = true               # download ECB exchange rates for currency convers
 
 [ai]
 enabled = true
-default = "haiku"             # model used when no model prefix is typed
+default = "groq"              # model used when no model prefix is typed
 # system_prompt = "..."       # instructions given to every model
+
+[ai.models.groq]
+provider = "groq"             # free plan; key saved by the setup (or $GROQ_API_KEY)
 
 [ai.models.haiku]
 provider = "claude"
@@ -296,6 +335,11 @@ enabled = true
 model = "~/.local/share/poppi_launcher/ggml-base.en.bin"   # whisper.cpp model
 language = "auto"             # or "en", "de", "sl", …; English-only models ignore it
 # command = "my-stt {file}"   # instead of whisper-cli: prints the text of a 16 kHz mono WAV
+wake_word = false             # listen for "Poppi" while running in the background
+wake_phrase = "Poppi"
+
+[notes]
+file = "~/Documents/Poppi notes.md"
 
 [aliases]
 # keyword = "URL or command"; {} is replaced by what you type after the keyword
@@ -308,13 +352,13 @@ Colors accept anything GTK CSS understands (`#rrggbb`, `rgba(...)`, names).
 
 **Aliases.** The first word you type is looked up in `[aliases]`. A value starting with `http://` or `https://` is opened in the browser with the rest of your input URL-encoded in place of `{}`, which makes it a custom search engine. Anything else is run as a shell command, with your input inserted (each word quoted) at `{}` or appended. An alias may reuse a built-in keyword such as `yt` to replace it.
 
-**What is stored where.** Query history, launch counts and recent emojis are in `~/.local/state/poppi_launcher/`; exchange rates are cached in `~/.cache/poppi_launcher/`. Set `history_size = 0` to turn history off. Clipboard history is never stored.
+**What is stored where.** Query history, launch counts, recent emojis and pending reminders are in `~/.local/state/poppi_launcher/`; exchange rates are cached in `~/.cache/poppi_launcher/`. Set `history_size = 0` to turn history off. Clipboard history is never stored.
 
 ## 📋 Requirements
 
 - **Rust**: a recent stable toolchain (developed and tested with 1.92)
 - **GTK4**: 4.12 or later
-- **Linux**: built for GNOME; other GTK4-capable desktops work with the X11 or wlroots tools listed above
+- **Linux**: built for GNOME; other GTK4-capable desktops work with the X11 or wlroots tools listed above (and `FEATURES=layer-shell` on wlroots compositors)
 
 ## 🏗️ Architecture
 
@@ -336,7 +380,8 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## 🙏 Acknowledgments
 
-- Inspired by [Albert Launcher](https://github.com/albertlauncher/albert)
+- Inspired by [Albert Launcher](https://github.com/albertlauncher/albert) and macOS Spotlight
+- Speech recognition by [whisper.cpp](https://github.com/ggml-org/whisper.cpp)
 - Built with [GTK4](https://www.gtk.org/) and [Rust](https://www.rust-lang.org/)
 - Thanks to the open-source community for amazing tools and libraries
 
