@@ -34,9 +34,11 @@ pub fn level(pcm: &[u8]) -> f32 {
         return 0.0;
     }
     let sum: f64 = pcm
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|b| {
-            let s = f64::from(i16::from_le_bytes([b[0], b[1]]));
+            let s = f64::from(i16::from_le_bytes(*b));
             s * s
         })
         .sum();
@@ -366,7 +368,7 @@ mod live_tests {
         {
             let audio = std::fs::read(path).unwrap();
             let mut vad = Vad::default();
-            for frame in audio.chunks_exact(FRAME_BYTES) {
+            for frame in audio.as_chunks::<FRAME_BYTES>().0 {
                 if let Some(segment) = vad.push(frame) {
                     let started = std::time::Instant::now();
                     let text = voice::transcribe(&config, &segment, Pass::Wake);
