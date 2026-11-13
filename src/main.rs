@@ -1,3 +1,4 @@
+mod actions;
 mod ai;
 mod alias;
 mod app_launcher;

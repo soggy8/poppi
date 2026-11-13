@@ -1,6 +1,7 @@
 //! What the launcher knows and what it would show for a given query.
 //! No widgets here; the `ui` module renders `results`.
 
+use crate::actions::{self, Action};
 use crate::ai::{self, providers};
 use crate::alias::{self, AliasTarget};
 use crate::app_launcher::{App, AppLauncher};
@@ -141,6 +142,9 @@ pub enum ResultItem {
         model: String,
         label: String,
     },
+    /// Something the AI proposed that has no row of its own (apps, web
+    /// searches, commands and system actions use theirs).
+    Proposed(Action),
     /// The conversation so far.
     Transcript {
         turns: Vec<Turn>,
@@ -697,6 +701,10 @@ impl LauncherState {
                     None => (self.chat_model(config), question),
                 };
                 items.push(ask_item(config, question, &model));
+            } else if let Some(last) = self.chat.last().filter(|t| t.status == TurnStatus::Done) {
+                // What the latest answer offers to do, ready for Enter.
+                let proposed = actions::split(&last.text).1;
+                items.extend(proposed.into_iter().map(|a| self.action_item(a, config)));
             }
             self.mode = Mode::Ai;
             self.results = items;
@@ -1035,6 +1043,24 @@ impl LauncherState {
         vec![ResultItem::Info("Reading folder…".to_string())]
     }
 
+    /// The row for a proposed action: the existing kind of row where there
+    /// is one, so it looks and runs like everything else.
+    fn action_item(&self, action: Action, config: &Config) -> ResultItem {
+        match action {
+            Action::OpenApp(name) => match self.apps.search(&name, &self.usage, 1).first() {
+                Some(app) => ResultItem::App((*app).clone()),
+                None => ResultItem::Proposed(Action::OpenApp(name)),
+            },
+            Action::WebSearch(query) => ResultItem::Search {
+                engine: Engine::from_id(&config.search.default_engine).unwrap_or(Engine::Google),
+                query,
+            },
+            Action::Run(command) => ResultItem::Terminal(command),
+            Action::System(action) => ResultItem::System(action),
+            other => ResultItem::Proposed(other),
+        }
+    }
+
     fn history_results(&self, filter: &str) -> Vec<ResultItem> {
         let filter = filter.to_lowercase();
         if filter == "clear" && !self.history.entries().is_empty() {
@@ -1123,8 +1149,15 @@ impl LauncherState {
         // Apps always come first. A command on $PATH is offered after them,
         // or leads the list when nothing else matched.
         let had_matches = !items.is_empty();
-        if Terminal::looks_like_command(query) {
+        let is_command = Terminal::looks_like_command(query);
+        if is_command {
             items.push(ResultItem::Terminal(query.to_string()));
+        }
+        // A few words that match nothing read like a request: offer to let
+        // the AI handle it ("open my downloads folder").
+        if !had_matches && !is_command && config.ai.enabled && query.split_whitespace().count() >= 3
+        {
+            items.push(ask_item(config, query.trim(), &config.ai.default));
         }
         if !had_matches {
             items.extend(
@@ -1431,6 +1464,57 @@ mod tests {
             ResultItem::Alias { name, target: AliasTarget::Url(url) }
                 if name == "gh" && url == "https://github.com/search?q=gtk4%20rust"
         ));
+    }
+
+    #[test]
+    fn proposed_actions_become_rows_under_the_answer() {
+        let mut s = state();
+        let config = Config::default();
+        s.chat.push(Turn {
+            question: "lock up and show my downloads".into(),
+            text: "Done.\n[[open: ~/Downloads]]\n[[web_search: rust]]\n[[run: df -h]]\n\
+                   [[system: lock]]\n[[open_app: Nonexistent Thing]]"
+                .into(),
+            status: TurnStatus::Done,
+            model: "groq".into(),
+            label: "Groq".into(),
+        });
+        s.update("", &config);
+        assert!(matches!(
+            s.results.as_slice(),
+            [
+                ResultItem::Transcript { .. },
+                ResultItem::Proposed(Action::Open(path)),
+                ResultItem::Search { query, .. },
+                ResultItem::Terminal(command),
+                ResultItem::System(SystemAction::Lock),
+                ResultItem::Proposed(Action::OpenApp(_)),
+            ] if path == "~/Downloads" && query == "rust" && command == "df -h"
+        ));
+        // Typing a follow-up replaces them with the question.
+        s.update("and my documents", &config);
+        assert!(matches!(
+            s.results.as_slice(),
+            [ResultItem::Transcript { .. }, ResultItem::Ask { .. }]
+        ));
+    }
+
+    #[test]
+    fn requests_that_match_nothing_can_go_to_the_ai() {
+        let mut s = state();
+        let config = Config::default();
+        s.update("open my downloads folder", &config);
+        assert!(matches!(
+            s.results.first(),
+            Some(ResultItem::Ask { question, model, .. })
+                if question == "open my downloads folder" && model == "groq"
+        ));
+        // A word or two still searches the web first.
+        s.update("zzqqy blorp", &config);
+        assert!(!s
+            .results
+            .iter()
+            .any(|r| matches!(r, ResultItem::Ask { .. })));
     }
 
     #[test]

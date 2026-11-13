@@ -1,6 +1,7 @@
 //! Running the selected result.
 
 use super::Launcher;
+use crate::actions::Action;
 use crate::alias;
 use crate::app_launcher::AppLauncher;
 use crate::emoji_picker::EmojiPicker;
@@ -47,7 +48,7 @@ impl Launcher {
                     return;
                 };
                 remember = false;
-                self.copy_text(last.text.trim())
+                self.copy_text(&crate::actions::split(&last.text).0)
             }
             ResultItem::History(past) => {
                 // Bring the query back for editing or another Enter.
@@ -71,6 +72,14 @@ impl Launcher {
             ResultItem::System(action) | ResultItem::Confirm(action) => {
                 remember = false;
                 action.run()
+            }
+            ResultItem::Proposed(action) => {
+                remember = false;
+                match self.run_proposed(action) {
+                    Some(result) => result,
+                    // It put a new search in the bar; stay open.
+                    None => return,
+                }
             }
             ResultItem::Setup => {
                 remember = false;
@@ -215,6 +224,45 @@ impl Launcher {
         let uri = gio::File::for_path(target).uri();
         gio::AppInfo::launch_default_for_uri(&uri, self.launch_context().as_ref())
             .map_err(|e| format!("Could not open {}: {}", target.display(), e))
+    }
+
+    /// Run an action the AI proposed. `None` when it turned into a new
+    /// search in the bar (finding files, picking a window or an app), so
+    /// the launcher stays open to show the results.
+    fn run_proposed(&self, action: Action) -> Option<Result<(), String>> {
+        let search_for = |text: String| {
+            self.end_conversation();
+            self.entry.set_text(&text);
+            self.entry.set_position(-1);
+            None
+        };
+        match action {
+            Action::Open(target) if target.contains("://") || target.starts_with("www.") => {
+                let url = if target.contains("://") {
+                    target
+                } else {
+                    format!("https://{}", target)
+                };
+                Some(search::open_url(&url, self.launch_context().as_ref()))
+            }
+            Action::Open(target) => {
+                let path = crate::files::expand_tilde(&target);
+                if !path.exists() {
+                    return Some(Err(format!("{} does not exist", target)));
+                }
+                let uri = gio::File::for_path(&path).uri();
+                Some(
+                    gio::AppInfo::launch_default_for_uri(&uri, self.launch_context().as_ref())
+                        .map_err(|e| format!("Could not open {}: {}", target, e)),
+                )
+            }
+            Action::Copy(text) => Some(self.copy_text(&text)),
+            Action::FindFiles(query) => search_for(format!("f {}", query)),
+            Action::SwitchWindow(name) => search_for(format!("sw {}", name)),
+            Action::OpenApp(name) => search_for(name),
+            // Shown as App, Search, Terminal and System rows instead.
+            Action::WebSearch(_) | Action::Run(_) | Action::System(_) => Some(Ok(())),
+        }
     }
 
     /// Typing tools send keystrokes to whichever window has focus, so the

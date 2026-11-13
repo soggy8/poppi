@@ -42,6 +42,7 @@ fn kind(item: &ResultItem) -> &'static str {
         ResultItem::Transcript { .. } => "transcript",
         ResultItem::Settings => "settings",
         ResultItem::Setup => "setup",
+        ResultItem::Proposed(_) => "proposed",
         ResultItem::Info(_) => "info",
     }
 }

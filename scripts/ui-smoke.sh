@@ -87,7 +87,7 @@ model = "gpt-5-mini"
 
 [ai.models.mock]
 provider = "command"
-command = "input=\$(cat); case \"\$input\" in *hang*) echo 'Partial answer'; sleep 30 ;; *) printf 'Use tar:\\n\\n\`\`\`sh\\ntar -xzf archive.tar.gz\\n\`\`\`\\n' ;; esac"
+command = "input=\$(cat); case \"\$input\" in *hang*) echo 'Partial answer'; sleep 30 ;; *xyzzy*) printf 'Opening it.\\n\\n[[open: ~/Downloads]]\\n[[system: lock]]\\n' ;; *) printf 'Use tar:\\n\\n\`\`\`sh\\ntar -xzf archive.tar.gz\\n\`\`\`\\n' ;; esac"
 CONFIG
 echo '["yt rust gtk4 tutorial","2^10"]' > "$work/state/poppi_launcher/history.json"
 
@@ -151,6 +151,10 @@ else
         "<wait>"                             # 34
         "<ctrl-d>"                           # 35
         "<escape>"                           # 36
+        "mock xyzzy"                         # 37
+        "<enter>"                            # 38
+        "<wait>"                             # 39
+        "<backspace>"                        # 40
     )
 fi
 steps+=("setup" "<enter>" "<wait>" "poppi settings" "<enter>")
@@ -232,6 +236,8 @@ else
     expect 34 "dictated text lands in the search bar"  'query="Lock screen" .*first=system .*voice=idle'
     expect 35 "Ctrl+D listens again"                   'voice=recording'
     expect 36 "Escape cancels without closing"         'query="Lock screen" .*visible=true .*voice=idle'
+    expect 39 "AI actions become rows to run"          'first=transcript selected=proposed .*chat=mock:Done'
+    expect 39 "an action and a system action proposed" 'results=3 '
 fi
 expect $((last - 4)) "typing setup offers the setup"      'mode="Apps" results=1 first=setup'
 expect $((last - 3)) "opening the setup hides the launcher" 'visible=false'

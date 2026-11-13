@@ -75,8 +75,10 @@ impl Launcher {
         // Alt+1 … Alt+9 run the nth result directly.
         if alt && !emoji_mode {
             if let Some(digit) = key.to_unicode().and_then(|c| c.to_digit(10)) {
-                if (1..=9).contains(&digit) && (digit as usize) <= count {
-                    self.activate_index(digit as usize - 1, false);
+                // In a conversation the numbers count the rows below it.
+                let index = digit as usize - usize::from(!answer_mode);
+                if (1..=9).contains(&digit) && index < count {
+                    self.activate_index(index, false);
                     return glib::Propagation::Stop;
                 }
             }

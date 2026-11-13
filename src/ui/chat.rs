@@ -38,7 +38,9 @@ impl Launcher {
     /// A session for `model`, replacing one for another model (or for an
     /// entry whose settings have changed since).
     fn ensure_session(&self, model: &str) -> Result<(), String> {
-        let resolved = providers::resolve(&self.config.borrow().ai, Some(model))?;
+        let mut resolved = providers::resolve(&self.config.borrow().ai, Some(model))?;
+        // Every model may propose actions; they run only on Enter.
+        resolved.system_prompt = crate::actions::system_prompt(&resolved.system_prompt);
         {
             let mut ai = self.ai.borrow_mut();
             if let Some(session) = ai.as_mut() {

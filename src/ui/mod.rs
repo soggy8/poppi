@@ -821,6 +821,15 @@ impl Launcher {
         if !self.window.is_visible() {
             return;
         }
+        // A finished answer that proposes actions gets its rows below it.
+        let proposes = turns.last().is_some_and(|turn| {
+            turn.status == crate::state::TurnStatus::Done
+                && !crate::actions::split(&turn.text).1.is_empty()
+        });
+        if status_changed && proposes {
+            self.refresh();
+            return;
+        }
         self.transcript_view.borrow_mut().sync(&turns);
 
         let list_width = self.config.borrow().theme.width - 2;
@@ -985,12 +994,15 @@ impl Launcher {
                 };
             }
 
-            // Highlight what Enter will run: the first row, or in a
-            // conversation the question being typed.
-            let preferred = if answer_mode {
+            // Highlight what Enter will run: the first row; in a
+            // conversation the question being typed, or else the first
+            // action the answer proposed.
+            let preferred = if !answer_mode {
+                0
+            } else if matches!(results.last(), Some(ResultItem::Ask { .. })) {
                 results.len() as i32 - 1
             } else {
-                0
+                1
             };
             match self.list_box.row_at_index(preferred) {
                 Some(row) if row.is_selectable() => self.list_box.select_row(Some(&row)),

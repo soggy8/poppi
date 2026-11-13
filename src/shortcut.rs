@@ -257,7 +257,12 @@ mod live_tests {
     #[test]
     #[ignore]
     fn real_clashes() {
-        for accel in ["<Control>space", "<Super>space", "<Super>d", "<Control><Alt>p"] {
+        for accel in [
+            "<Control>space",
+            "<Super>space",
+            "<Super>d",
+            "<Control><Alt>p",
+        ] {
             println!("{accel}: {:?}", super::clashes(accel));
         }
         println!("current: {:?}", super::current());

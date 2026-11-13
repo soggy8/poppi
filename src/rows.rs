@@ -350,6 +350,12 @@ impl RowSlot {
                 self.apply_title(result, context, false, false, true);
                 self.apply_subtitle(Some(expression));
             }
+            ResultItem::Proposed(action) => {
+                let (icon, title, subtitle) = proposed_row(action);
+                self.apply_icon(IconSpec::Symbolic(icon));
+                self.apply_title(&title, context, false, false, false);
+                self.apply_subtitle(Some(subtitle));
+            }
             ResultItem::Terminal(command) => {
                 self.apply_icon(IconSpec::Symbolic("utilities-terminal-symbolic"));
                 self.apply_title(command, context, false, false, false);
@@ -616,7 +622,13 @@ impl TurnView {
     }
 
     fn update(&mut self, turn: &Turn) {
-        let trimmed = turn.text.trim();
+        // Proposed actions are shown as rows below, not as text.
+        let shown = if turn.status == TurnStatus::Failed {
+            turn.text.trim().to_string()
+        } else {
+            crate::actions::split(&turn.text).0
+        };
+        let trimmed = shown.as_str();
         if trimmed.is_empty() {
             self.clear_blocks();
             self.answer_box.set_visible(false);
@@ -761,6 +773,49 @@ impl TranscriptView {
     }
 }
 
+/// Icon, title and subtitle for an action the AI proposed.
+fn proposed_row(action: &crate::actions::Action) -> (&'static str, String, &'static str) {
+    use crate::actions::Action;
+    const SUGGESTED: &str = "Suggested by the AI · Enter to run";
+    match action {
+        Action::Open(target) if target.contains("://") => (
+            "web-browser-symbolic",
+            format!("Open {}", target),
+            SUGGESTED,
+        ),
+        Action::Open(target) => (
+            "folder-open-symbolic",
+            format!("Open {}", target),
+            SUGGESTED,
+        ),
+        Action::FindFiles(query) => (
+            "edit-find-symbolic",
+            format!("Find files: {}", query),
+            SUGGESTED,
+        ),
+        Action::SwitchWindow(name) => (
+            "preferences-system-windows-symbolic",
+            format!("Switch to {}", name),
+            SUGGESTED,
+        ),
+        Action::Copy(text) => (
+            "edit-copy-symbolic",
+            format!("Copy “{}”", crate::clipboard::preview(text)),
+            SUGGESTED,
+        ),
+        Action::OpenApp(name) => (
+            "application-x-executable-symbolic",
+            format!("Open {}", name),
+            "No installed app has that name · Enter searches for it",
+        ),
+        // These are shown with their own kind of row.
+        Action::WebSearch(query) | Action::Run(query) => {
+            ("system-run-symbolic", query.clone(), SUGGESTED)
+        }
+        Action::System(action) => ("system-run-symbolic", action.name().to_string(), SUGGESTED),
+    }
+}
+
 // ---------- Emoji buttons and footer hints ----------
 
 pub fn emoji_button(emoji: &Emoji) -> Button {
@@ -838,6 +893,7 @@ pub fn hints(
         None => Vec::new(),
         Some(item) => match item {
             ResultItem::App(_) => vec![("↵", "Launch"), ("Ctrl+K", "Actions")],
+            ResultItem::Proposed(_) => vec![("↵", "Run")],
             ResultItem::Window { .. } => {
                 vec![("↵", "Switch"), ("Ctrl+W", "Close"), ("Ctrl+K", "Actions")]
             }
