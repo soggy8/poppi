@@ -17,6 +17,12 @@ pub enum Intent {
     },
     Settings,
     Setup,
+    /// `remind 10m tea`: the rest, parsed when shown.
+    Remind(String),
+    /// `reminders`: the pending ones.
+    Reminders,
+    /// `note buy milk`; just `note` opens the notes.
+    Note(String),
     /// Window switcher with an optional filter.
     Windows(String),
     Search {
@@ -191,6 +197,15 @@ pub fn parse(query: &str, options: &ParseOptions) -> Intent {
 
     if let Some(filter) = strip_keyword(query, "history") {
         return Intent::History(filter.to_string());
+    }
+    if strip_keyword(query, "reminders").is_some() {
+        return Intent::Reminders;
+    }
+    if let Some(rest) = strip_keyword(query, "remind") {
+        return Intent::Remind(rest.to_string());
+    }
+    if let Some(rest) = strip_keyword(query, "note") {
+        return Intent::Note(rest.to_string());
     }
 
     if let Some(filter) = strip_any(query, &["sw", "switch"]) {
@@ -544,6 +559,11 @@ mod tests {
     fn settings() {
         assert_eq!(p("poppi settings"), Intent::Settings);
         assert_eq!(p("poppi setup"), Intent::Setup);
+        assert_eq!(p("remind 10m tea"), Intent::Remind("10m tea".into()));
+        assert_eq!(p("reminders"), Intent::Reminders);
+        assert_eq!(p("note buy milk"), Intent::Note("buy milk".into()));
+        // An app called Notes is still found.
+        assert_eq!(p("notes"), Intent::Apps("notes".into()));
     }
 
     #[test]

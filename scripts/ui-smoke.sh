@@ -155,6 +155,10 @@ else
         "<enter>"                            # 38
         "<wait>"                             # 39
         "<backspace>"                        # 40
+        "remind me in 10 minutes to stretch" # 41
+        "<enter>"                            # 42
+        "reminders"                          # 43
+        "note buy milk"                      # 44
     )
 fi
 steps+=("setup" "<enter>" "<wait>" "poppi settings" "<enter>")
@@ -238,6 +242,9 @@ else
     expect 36 "Escape cancels without closing"         'query="Lock screen" .*visible=true .*voice=idle'
     expect 39 "AI actions become rows to run"          'first=transcript selected=proposed .*chat=mock:Done'
     expect 39 "an action and a system action proposed" 'results=3 '
+    expect 41 "a reminder is understood"               'mode="Reminder" results=1 first=remind'
+    expect 43 "it is listed until it is due"           'mode="Reminder" results=1 first=reminder'
+    expect 44 "notes"                                  'mode="Note" results=1 first=note'
 fi
 expect $((last - 4)) "typing setup offers the setup"      'mode="Apps" results=1 first=setup'
 expect $((last - 3)) "opening the setup hides the launcher" 'visible=false'

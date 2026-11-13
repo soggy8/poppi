@@ -21,6 +21,7 @@ pub struct Config {
     pub clipboard: ClipboardConfig,
     pub emoji: EmojiConfig,
     pub voice: VoiceConfig,
+    pub notes: NotesConfig,
     /// Keyword -> URL or command. `{}` is replaced by the typed arguments.
     pub aliases: BTreeMap<String, String>,
 }
@@ -98,6 +99,21 @@ impl Default for ClipboardConfig {
         Self {
             enabled: true,
             size: 30,
+        }
+    }
+}
+
+/// "note buy milk" adds a line to this Markdown file.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct NotesConfig {
+    pub file: String,
+}
+
+impl Default for NotesConfig {
+    fn default() -> Self {
+        Self {
+            file: "~/Documents/Poppi notes.md".to_string(),
         }
     }
 }

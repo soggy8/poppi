@@ -326,6 +326,37 @@ impl RowSlot {
                     "Press Enter again to confirm, or keep typing to cancel",
                 ));
             }
+            ResultItem::Remind { at, text } => {
+                let now = crate::reminders::Now::local();
+                self.apply_icon(IconSpec::Symbolic("alarm-symbolic"));
+                self.apply_title(text, context, false, false, false);
+                let sub = format!(
+                    "Remind me at {} ({})",
+                    crate::reminders::describe(*at, now),
+                    crate::reminders::from_now(*at, now)
+                );
+                self.apply_subtitle(Some(&sub));
+            }
+            ResultItem::PendingReminder(reminder) => {
+                let now = crate::reminders::Now::local();
+                self.apply_icon(IconSpec::Symbolic("alarm-symbolic"));
+                self.apply_title(&reminder.text, context, false, false, false);
+                let sub = format!(
+                    "{} · Enter cancels it",
+                    crate::reminders::describe(reminder.at, now)
+                );
+                self.apply_subtitle(Some(&sub));
+            }
+            ResultItem::Note(text) => {
+                self.apply_icon(IconSpec::Symbolic("document-edit-symbolic"));
+                self.apply_title(text, context, false, false, false);
+                self.apply_subtitle(Some("Add to your notes"));
+            }
+            ResultItem::OpenNotes => {
+                self.apply_icon(IconSpec::Symbolic("document-edit-symbolic"));
+                self.apply_title("Open your notes", context, false, false, false);
+                self.apply_subtitle(Some("Add one with \"note buy milk\""));
+            }
             ResultItem::Setup => {
                 self.apply_icon(IconSpec::Symbolic("emblem-system-symbolic"));
                 self.apply_title("Set up Poppi", context, false, false, false);
@@ -813,6 +844,12 @@ fn proposed_row(action: &crate::actions::Action) -> (&'static str, String, &'sta
             ("system-run-symbolic", query.clone(), SUGGESTED)
         }
         Action::System(action) => ("system-run-symbolic", action.name().to_string(), SUGGESTED),
+        Action::Remind(text) => (
+            "alarm-symbolic",
+            format!("Remind: {}", text),
+            "The time is unclear · Enter lets you fix it",
+        ),
+        Action::Note(text) => ("document-edit-symbolic", text.clone(), SUGGESTED),
     }
 }
 
@@ -894,6 +931,10 @@ pub fn hints(
         Some(item) => match item {
             ResultItem::App(_) => vec![("↵", "Launch"), ("Ctrl+K", "Actions")],
             ResultItem::Proposed(_) => vec![("↵", "Run")],
+            ResultItem::Remind { .. } => vec![("↵", "Set reminder")],
+            ResultItem::PendingReminder(_) => vec![("↵", "Cancel it")],
+            ResultItem::Note(_) => vec![("↵", "Add note")],
+            ResultItem::OpenNotes => vec![("↵", "Open")],
             ResultItem::Window { .. } => {
                 vec![("↵", "Switch"), ("Ctrl+W", "Close"), ("Ctrl+K", "Actions")]
             }

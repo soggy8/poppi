@@ -80,6 +80,8 @@ fn safe_hands_free(item: &ResultItem) -> bool {
         | ResultItem::Window { .. }
         | ResultItem::File(_)
         | ResultItem::Search { .. }
+        | ResultItem::Remind { .. }
+        | ResultItem::Note(_)
         | ResultItem::Ask { .. } => true,
         ResultItem::Proposed(action) => matches!(
             action,

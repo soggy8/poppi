@@ -43,6 +43,10 @@ fn kind(item: &ResultItem) -> &'static str {
         ResultItem::Settings => "settings",
         ResultItem::Setup => "setup",
         ResultItem::Proposed(_) => "proposed",
+        ResultItem::Remind { .. } => "remind",
+        ResultItem::PendingReminder(_) => "reminder",
+        ResultItem::Note(_) => "note",
+        ResultItem::OpenNotes => "notes",
         ResultItem::Info(_) => "info",
     }
 }

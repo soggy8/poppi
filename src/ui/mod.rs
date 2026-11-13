@@ -84,6 +84,8 @@ fn init_layer_shell(window: &Window) {
     );
 }
 
+const REMINDER_CHECK_SECONDS: u32 = 10;
+
 /// How long typing a new folder may wait for its listing before showing
 /// "Reading folder…" and finishing in the background.
 const DIR_LIST_WAIT: Duration = Duration::from_millis(25);
@@ -337,7 +339,70 @@ impl Launcher {
         });
         launcher.connect_signals();
         launcher.update_wake_listener();
+        launcher.watch_reminders();
         launcher
+    }
+
+    /// Show reminders when they are due. Checked against the clock rather
+    /// than with one timer each, so they still come after a suspend; ones
+    /// due while Poppi was not running show at start, as missed.
+    fn watch_reminders(self: &Rc<Self>) {
+        self.fire_due_reminders();
+        let weak = Rc::downgrade(self);
+        glib::timeout_add_seconds_local(REMINDER_CHECK_SECONDS, move || match weak.upgrade() {
+            Some(this) => {
+                this.fire_due_reminders();
+                glib::ControlFlow::Continue
+            }
+            None => glib::ControlFlow::Break,
+        });
+    }
+
+    fn fire_due_reminders(&self) {
+        let now = crate::reminders::Now::local();
+        let due: Vec<crate::reminders::Reminder> = self
+            .state
+            .borrow()
+            .reminders
+            .items
+            .iter()
+            .filter(|r| r.at <= now.unix)
+            .cloned()
+            .collect();
+        for reminder in due {
+            let late = now.unix - reminder.at > 2 * i64::from(REMINDER_CHECK_SECONDS);
+            let title = if late {
+                format!(
+                    "Missed reminder ({})",
+                    crate::reminders::describe(reminder.at, now)
+                )
+            } else {
+                "Reminder".to_string()
+            };
+            self.notify(&title, &reminder.text);
+            self.state.borrow_mut().reminders.remove(&reminder);
+        }
+    }
+
+    fn notify(&self, title: &str, body: &str) {
+        if crate::utils::has_command("notify-send") {
+            let sent = crate::utils::spawn_detached(
+                std::process::Command::new("notify-send")
+                    .args([
+                        "--app-name=Poppi",
+                        "--icon=alarm-symbolic",
+                        "--urgency=critical",
+                    ])
+                    .arg(title)
+                    .arg(body),
+            );
+            if sent.is_ok() {
+                return;
+            }
+        }
+        let notification = gio::Notification::new(title);
+        notification.set_body(Some(body));
+        self.app.send_notification(None, &notification);
     }
 
     fn connect_signals(self: &Rc<Self>) {

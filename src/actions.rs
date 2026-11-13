@@ -22,6 +22,8 @@ exactly like these:
 [[copy: some text]]  copy text to the clipboard
 [[run: df -h]]  run a shell command in a terminal
 [[system: lock]]  lock, suspend, logout, restart or poweroff
+[[remind: in 10 minutes check the oven]]  a reminder (in …, or at 15:30)
+[[note: buy milk]]  add a line to the user's notes
 The user sees each action as a button and decides whether to run it. Only add actions for \
 what the user asked you to do; for questions, just answer. When you add actions, keep the \
 text to one short sentence.";
@@ -36,6 +38,8 @@ pub enum Action {
     Copy(String),
     Run(String),
     System(SystemAction),
+    Remind(String),
+    Note(String),
 }
 
 impl Action {
@@ -55,6 +59,8 @@ impl Action {
                 "copy" => Action::Copy(arg_owned),
                 "run" | "shell" | "command" => Action::Run(arg_owned),
                 "system" => Action::System(system_action(arg)?),
+                "remind" | "reminder" => Action::Remind(arg_owned),
+                "note" => Action::Note(arg_owned),
                 _ => return None,
             },
         )

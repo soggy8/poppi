@@ -6,13 +6,14 @@ use crate::ai::{self, providers};
 use crate::alias::{self, AliasTarget};
 use crate::app_launcher::{App, AppLauncher};
 use crate::clipboard::{self, ClipboardEntry, ClipboardHistory};
-use crate::context;
 use crate::config::Config;
+use crate::context;
 use crate::emoji_picker::{self, Emoji, EmojiPicker};
 use crate::files::{self, ContentMatch, FileEntry};
 use crate::history::History;
 use crate::matching::Matcher;
 use crate::query::{self, Intent, ParseOptions};
+use crate::reminders::{self, Reminder};
 use crate::scripts::{Script, ScriptCatalog, ScriptItem, ScriptMode};
 use crate::search::{self, Engine};
 use crate::system::SystemAction;
@@ -159,6 +160,16 @@ pub enum ResultItem {
     Settings,
     /// The first-run setup: AI service, shortcut, voice.
     Setup,
+    /// A reminder to set: due at (Unix time), and what to say.
+    Remind {
+        at: i64,
+        text: String,
+    },
+    /// A reminder already set; Enter cancels it.
+    PendingReminder(Reminder),
+    /// A line to add to the notes file.
+    Note(String),
+    OpenNotes,
     /// A message row; activating it does nothing.
     Info(String),
 }
@@ -181,6 +192,8 @@ pub enum Mode {
     Clipboard,
     Ai,
     Settings,
+    Reminders,
+    Notes,
 }
 
 impl Mode {
@@ -201,6 +214,8 @@ impl Mode {
             Mode::Clipboard => "Clipboard",
             Mode::Ai => "AI",
             Mode::Settings => "Settings",
+            Mode::Reminders => "Reminder",
+            Mode::Notes => "Note",
         }
     }
 }
@@ -232,6 +247,21 @@ pub struct Needs {
 struct ActionMenuState {
     saved_query: String,
     actions: Vec<ResultItem>,
+}
+
+/// The row for "remind …": the reminder, or how to say when.
+fn remind_item(rest: &str) -> ResultItem {
+    if rest.trim().is_empty() {
+        return ResultItem::Info(
+            "Say when: \"remind 10m tea\", \"remind me at 15:30 to call Ana\"".to_string(),
+        );
+    }
+    match reminders::parse(rest, reminders::Now::local()) {
+        Some((at, text)) => ResultItem::Remind { at, text },
+        None => ResultItem::Info(
+            "When? Try \"remind 10m tea\" or \"remind me at 15:30 to call Ana\"".to_string(),
+        ),
+    }
 }
 
 fn ask_item(config: &Config, question: &str, model: &str) -> ResultItem {
@@ -270,6 +300,7 @@ pub struct LauncherState {
     /// launcher was opened; sent only with questions about them.
     pub selection: Option<String>,
     pub clipboard_text: Option<String>,
+    pub reminders: reminders::Store,
     pub apps: AppLauncher,
     pub scripts: ScriptCatalog,
     pub usage: Usage,
@@ -312,6 +343,7 @@ impl LauncherState {
             config,
         );
         s.scripts = ScriptCatalog::load();
+        s.reminders = reminders::Store::load();
         s
     }
 
@@ -325,6 +357,7 @@ impl LauncherState {
         Self {
             selection: None,
             clipboard_text: None,
+            reminders: reminders::Store::default(),
             apps: AppLauncher::empty(),
             scripts: ScriptCatalog::default(),
             usage,
@@ -764,6 +797,28 @@ impl LauncherState {
             }
             Intent::Settings => (Mode::Settings, vec![ResultItem::Settings]),
             Intent::Setup => (Mode::Settings, vec![ResultItem::Setup]),
+            Intent::Remind(rest) => (Mode::Reminders, vec![remind_item(&rest)]),
+            Intent::Reminders => {
+                let items: Vec<ResultItem> = self
+                    .reminders
+                    .items
+                    .iter()
+                    .cloned()
+                    .map(ResultItem::PendingReminder)
+                    .collect();
+                let items = if items.is_empty() {
+                    vec![ResultItem::Info(
+                        "No reminders. Set one with \"remind 10m tea\"".to_string(),
+                    )]
+                } else {
+                    items
+                };
+                (Mode::Reminders, items)
+            }
+            Intent::Note(text) if text.trim().is_empty() => {
+                (Mode::Notes, vec![ResultItem::OpenNotes])
+            }
+            Intent::Note(text) => (Mode::Notes, vec![ResultItem::Note(text.trim().to_string())]),
             Intent::Windows(filter) => {
                 if matches!(self.windows, WindowList::NotLoaded) {
                     self.windows = WindowList::Loading;
@@ -1093,6 +1148,11 @@ impl LauncherState {
             },
             Action::Run(command) => ResultItem::Terminal(command),
             Action::System(action) => ResultItem::System(action),
+            Action::Remind(rest) => match remind_item(&rest) {
+                ResultItem::Info(_) => ResultItem::Proposed(Action::Remind(rest)),
+                item => item,
+            },
+            Action::Note(text) => ResultItem::Note(text),
             other => ResultItem::Proposed(other),
         }
     }
@@ -1541,7 +1601,9 @@ mod tests {
         let mut s = state();
         let config = Config::default();
         s.update("explain this?", &config);
-        assert!(matches!(&s.results[0], ResultItem::Ask { label, .. } if !label.contains("selected")));
+        assert!(
+            matches!(&s.results[0], ResultItem::Ask { label, .. } if !label.contains("selected"))
+        );
 
         s.selection = Some("fn main() {}".into());
         s.update("explain this?", &config);

@@ -14,6 +14,7 @@ mod markdown;
 mod matching;
 mod model_editor;
 mod query;
+mod reminders;
 mod rows;
 mod scripts;
 mod search;

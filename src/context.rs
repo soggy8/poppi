@@ -44,7 +44,10 @@ pub fn attach(question: &str, context: Option<&str>) -> String {
         return question.to_string();
     };
     let text: String = text.chars().take(MAX_CHARS).collect();
-    format!("{}\n\nThe text this is about:\n\"\"\"\n{}\n\"\"\"", question, text)
+    format!(
+        "{}\n\nThe text this is about:\n\"\"\"\n{}\n\"\"\"",
+        question, text
+    )
 }
 
 #[cfg(test)]
@@ -54,9 +57,15 @@ mod tests {
     #[test]
     fn questions_that_refer_to_a_text() {
         assert_eq!(wanted("explain this?"), Some(Source::Selection));
-        assert_eq!(wanted("translate the selected text to German"), Some(Source::Selection));
+        assert_eq!(
+            wanted("translate the selected text to German"),
+            Some(Source::Selection)
+        );
         assert_eq!(wanted("summarize my clipboard"), Some(Source::Clipboard));
-        assert_eq!(wanted("what did I just copy? fix the copied code"), Some(Source::Clipboard));
+        assert_eq!(
+            wanted("what did I just copy? fix the copied code"),
+            Some(Source::Clipboard)
+        );
         assert_eq!(wanted("what is thistle?"), None);
         assert_eq!(wanted("capital of France?"), None);
     }

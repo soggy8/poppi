@@ -81,6 +81,35 @@ impl Launcher {
                     None => return,
                 }
             }
+            ResultItem::Remind { at, text } => {
+                remember = false;
+                self.state
+                    .borrow_mut()
+                    .reminders
+                    .add(crate::reminders::Reminder { at, text });
+                Ok(())
+            }
+            ResultItem::PendingReminder(reminder) => {
+                self.state.borrow_mut().reminders.remove(&reminder);
+                self.flash_footer_notice("Reminder cancelled");
+                self.refresh();
+                return;
+            }
+            ResultItem::Note(text) => {
+                remember = false;
+                let file = self.config.borrow().notes.file.clone();
+                crate::reminders::add_note(&file, &text)
+            }
+            ResultItem::OpenNotes => {
+                let file = self.config.borrow().notes.file.clone();
+                let path = crate::files::expand_tilde(&file);
+                if !path.exists() {
+                    let _ = crate::reminders::add_note(&file, "Notes from Poppi");
+                }
+                let uri = gio::File::for_path(&path).uri();
+                gio::AppInfo::launch_default_for_uri(&uri, self.launch_context().as_ref())
+                    .map_err(|e| format!("Could not open {}: {}", file, e))
+            }
             ResultItem::Setup => {
                 remember = false;
                 crate::setup::open(&self.app, self.config.clone());
@@ -260,6 +289,12 @@ impl Launcher {
             Action::FindFiles(query) => search_for(format!("f {}", query)),
             Action::SwitchWindow(name) => search_for(format!("sw {}", name)),
             Action::OpenApp(name) => search_for(name),
+            // The time was unclear: let it be fixed in the bar.
+            Action::Remind(text) => search_for(format!("remind {}", text)),
+            Action::Note(text) => {
+                let file = self.config.borrow().notes.file.clone();
+                Some(crate::reminders::add_note(&file, &text))
+            }
             // Shown as App, Search, Terminal and System rows instead.
             Action::WebSearch(_) | Action::Run(_) | Action::System(_) => Some(Ok(())),
         }
