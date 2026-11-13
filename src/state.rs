@@ -249,6 +249,18 @@ struct ActionMenuState {
     actions: Vec<ResultItem>,
 }
 
+/// "open my downloads folder" rather than "find . -name x": a sentence
+/// starting with an everyday verb, without shell syntax.
+fn reads_like_request(query: &str) -> bool {
+    const VERBS: [&str; 10] = [
+        "open", "show", "find", "play", "start", "search", "close", "set", "turn", "what",
+    ];
+    let mut words = query.split_whitespace();
+    let first = words.next().unwrap_or("").to_lowercase();
+    VERBS.contains(&first.as_str())
+        && !query.contains(['-', '/', '|', '>', '<', '$', '=', '~', '*', '&', ';', '\\', '"', '\''])
+}
+
 /// The row for "remind …": the reminder, or how to say when.
 fn remind_item(rest: &str) -> ResultItem {
     if rest.trim().is_empty() {
@@ -1246,14 +1258,18 @@ impl LauncherState {
         // or leads the list when nothing else matched.
         let had_matches = !items.is_empty();
         let is_command = Terminal::looks_like_command(query);
+        // A few words that match nothing read like a request: offer to let
+        // the AI handle it ("open my downloads folder"). Some distributions
+        // have programs called `open` or `show`; a sentence still wins.
+        let offer_ai = !had_matches
+            && config.ai.enabled
+            && query.split_whitespace().count() >= 3
+            && (!is_command || reads_like_request(query));
+        if offer_ai {
+            items.push(self.ask_row(config, query.trim(), &config.ai.default));
+        }
         if is_command {
             items.push(ResultItem::Terminal(query.to_string()));
-        }
-        // A few words that match nothing read like a request: offer to let
-        // the AI handle it ("open my downloads folder").
-        if !had_matches && !is_command && config.ai.enabled && query.split_whitespace().count() >= 3
-        {
-            items.push(self.ask_row(config, query.trim(), &config.ai.default));
         }
         if !had_matches {
             items.extend(
@@ -1624,6 +1640,11 @@ mod tests {
             Some(ResultItem::Ask { question, model, .. })
                 if question == "open my downloads folder" && model == "groq"
         ));
+        assert!(reads_like_request("open my downloads folder"));
+        assert!(reads_like_request("Show me the weather"));
+        assert!(!reads_like_request("find . -name '*.rs'"));
+        assert!(!reads_like_request("sh -c true"));
+        assert!(!reads_like_request("open /etc/hosts now"));
         // A word or two still searches the web first.
         s.update("zzqqy blorp", &config);
         assert!(!s
