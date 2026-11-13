@@ -138,12 +138,19 @@ impl Launcher {
 
         let history = state::chat_history(&self.state.borrow().chat);
         let label = providers::label(&self.config.borrow().ai, &model);
+        // "explain this": the selected text goes along, as the row said.
+        let context = self
+            .state
+            .borrow()
+            .context_for(&question)
+            .map(|(_, text)| text);
+        let prompt = crate::context::attach(&question, context.as_deref());
         let sent = self.ensure_session(&model).and_then(|()| {
             self.ai
                 .borrow_mut()
                 .as_mut()
                 .ok_or_else(|| "The model is not ready".to_string())?
-                .send(&history, &question)
+                .send(&history, &prompt)
         });
         let (text, status) = match sent {
             Ok(()) => (String::new(), TurnStatus::Thinking),
@@ -162,6 +169,7 @@ impl Launcher {
                 status,
                 model,
                 label,
+                context,
             });
         }
 

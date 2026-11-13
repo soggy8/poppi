@@ -423,6 +423,7 @@ impl Launcher {
             if window.is_active() {
                 // The clipboard is only readable while we have focus.
                 this.remember_clipboard();
+                this.read_context();
                 return;
             }
             let enabled = this.config.borrow().behavior.close_on_focus_loss;
@@ -534,6 +535,36 @@ impl Launcher {
             self.window.destroy();
         }
         self.dismissing.set(false);
+    }
+
+    /// What is selected in other apps and on the clipboard right now, for
+    /// questions like "explain this". Read on every opening; kept in
+    /// memory only and sent only with a question that refers to it.
+    fn read_context(self: &Rc<Self>) {
+        {
+            let mut state = self.state.borrow_mut();
+            state.selection = None;
+            state.clipboard_text = None;
+        }
+        let display = WidgetExt::display(&self.window);
+        let this = self.clone();
+        display
+            .primary_clipboard()
+            .read_text_async(gio::Cancellable::NONE, move |result| {
+                if let Ok(Some(text)) = result {
+                    this.state.borrow_mut().selection = Some(text.to_string());
+                    this.refresh_if_visible();
+                }
+            });
+        let this = self.clone();
+        display
+            .clipboard()
+            .read_text_async(gio::Cancellable::NONE, move |result| {
+                if let Ok(Some(text)) = result {
+                    this.state.borrow_mut().clipboard_text = Some(text.to_string());
+                    this.refresh_if_visible();
+                }
+            });
     }
 
     /// Remember the text on the clipboard, if any and if enabled.

@@ -6,6 +6,7 @@ use crate::ai::{self, providers};
 use crate::alias::{self, AliasTarget};
 use crate::app_launcher::{App, AppLauncher};
 use crate::clipboard::{self, ClipboardEntry, ClipboardHistory};
+use crate::context;
 use crate::config::Config;
 use crate::emoji_picker::{self, Emoji, EmojiPicker};
 use crate::files::{self, ContentMatch, FileEntry};
@@ -55,6 +56,9 @@ pub struct Turn {
     pub model: String,
     /// Its display name.
     pub label: String,
+    /// Text the question was about (the selection or the clipboard),
+    /// sent along with it and with every follow-up.
+    pub context: Option<String>,
 }
 
 impl Turn {
@@ -70,7 +74,10 @@ pub fn chat_history(turns: &[Turn]) -> Vec<ai::Message> {
         .filter(|turn| turn.status == TurnStatus::Done)
         .flat_map(|turn| {
             [
-                ai::Message::user(&turn.question),
+                ai::Message::user(&crate::context::attach(
+                    &turn.question,
+                    turn.context.as_deref(),
+                )),
                 ai::Message::assistant(&turn.text),
             ]
         })
@@ -235,7 +242,34 @@ fn ask_item(config: &Config, question: &str, model: &str) -> ResultItem {
     }
 }
 
+impl LauncherState {
+    /// The text a question refers to ("explain this"), if there is one.
+    pub fn context_for(&self, question: &str) -> Option<(context::Source, String)> {
+        let source = context::wanted(question)?;
+        let text = match source {
+            context::Source::Selection => self.selection.clone(),
+            context::Source::Clipboard => self.clipboard_text.clone(),
+        }?;
+        Some((source, text)).filter(|(_, t)| !t.trim().is_empty())
+    }
+
+    /// An offer to ask, saying when a text will be sent along.
+    fn ask_row(&self, config: &Config, question: &str, model: &str) -> ResultItem {
+        let mut item = ask_item(config, question, model);
+        if let (ResultItem::Ask { label, .. }, Some((source, _))) =
+            (&mut item, self.context_for(question))
+        {
+            *label = format!("{} · {}", label, source.describe());
+        }
+        item
+    }
+}
+
 pub struct LauncherState {
+    /// Text selected in another app, and on the clipboard, when the
+    /// launcher was opened; sent only with questions about them.
+    pub selection: Option<String>,
+    pub clipboard_text: Option<String>,
     pub apps: AppLauncher,
     pub scripts: ScriptCatalog,
     pub usage: Usage,
@@ -289,6 +323,8 @@ impl LauncherState {
         _config: &Config,
     ) -> Self {
         Self {
+            selection: None,
+            clipboard_text: None,
             apps: AppLauncher::empty(),
             scripts: ScriptCatalog::default(),
             usage,
@@ -700,7 +736,7 @@ impl LauncherState {
                     Some((model, rest)) => (model.to_string(), rest),
                     None => (self.chat_model(config), question),
                 };
-                items.push(ask_item(config, question, &model));
+                items.push(self.ask_row(config, question, &model));
             } else if let Some(last) = self.chat.last().filter(|t| t.status == TurnStatus::Done) {
                 // What the latest answer offers to do, ready for Enter.
                 let proposed = actions::split(&last.text).1;
@@ -724,7 +760,7 @@ impl LauncherState {
             Intent::Ask { question, model } => {
                 needs.ai = true;
                 let model = model.unwrap_or_else(|| config.ai.default.clone());
-                (Mode::Ai, vec![ask_item(config, &question, &model)])
+                (Mode::Ai, vec![self.ask_row(config, &question, &model)])
             }
             Intent::Settings => (Mode::Settings, vec![ResultItem::Settings]),
             Intent::Setup => (Mode::Settings, vec![ResultItem::Setup]),
@@ -1157,7 +1193,7 @@ impl LauncherState {
         // the AI handle it ("open my downloads folder").
         if !had_matches && !is_command && config.ai.enabled && query.split_whitespace().count() >= 3
         {
-            items.push(ask_item(config, query.trim(), &config.ai.default));
+            items.push(self.ask_row(config, query.trim(), &config.ai.default));
         }
         if !had_matches {
             items.extend(
@@ -1478,6 +1514,7 @@ mod tests {
             status: TurnStatus::Done,
             model: "groq".into(),
             label: "Groq".into(),
+            context: None,
         });
         s.update("", &config);
         assert!(matches!(
@@ -1497,6 +1534,22 @@ mod tests {
             s.results.as_slice(),
             [ResultItem::Transcript { .. }, ResultItem::Ask { .. }]
         ));
+    }
+
+    #[test]
+    fn questions_about_this_say_the_selection_goes_along() {
+        let mut s = state();
+        let config = Config::default();
+        s.update("explain this?", &config);
+        assert!(matches!(&s.results[0], ResultItem::Ask { label, .. } if !label.contains("selected")));
+
+        s.selection = Some("fn main() {}".into());
+        s.update("explain this?", &config);
+        assert!(
+            matches!(&s.results[0], ResultItem::Ask { label, .. } if label.ends_with("with your selected text"))
+        );
+        assert_eq!(s.context_for("explain this?").unwrap().1, "fn main() {}");
+        assert!(s.context_for("capital of France?").is_none());
     }
 
     #[test]
@@ -1541,6 +1594,7 @@ mod tests {
             status: TurnStatus::Thinking,
             model: "sonnet".into(),
             label: "Claude Sonnet".into(),
+            context: None,
         });
         assert!(s.chat_busy());
         s.chat[0].status = TurnStatus::Done;
@@ -1590,6 +1644,7 @@ mod tests {
             status: TurnStatus::Failed,
             model: "haiku".into(),
             label: "Claude Haiku".into(),
+            context: None,
         });
         assert!(chat_history(&s.chat).is_empty());
         s.reset_session();

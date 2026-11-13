@@ -1002,6 +1002,7 @@ mod tests {
                 status: TurnStatus::Answering,
                 model: "haiku".into(),
                 label: "Claude Haiku".into(),
+                context: None,
             }],
         };
         assert_eq!(
@@ -1016,6 +1017,7 @@ mod tests {
                 status: TurnStatus::Done,
                 model: "haiku".into(),
                 label: "Claude Haiku".into(),
+                context: None,
             }],
         };
         assert!(hints(Some(&with_code), false, true, false, false)

@@ -5,6 +5,7 @@ mod app_launcher;
 mod calculator;
 mod clipboard;
 mod config;
+mod context;
 mod conversions;
 mod emoji_picker;
 mod files;
