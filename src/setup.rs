@@ -198,6 +198,8 @@ struct Setup {
     shortcut: RefCell<Option<String>>,
     capturing: std::cell::Cell<bool>,
     voice_status: Label,
+    autostart: CheckButton,
+    wake_word: CheckButton,
     done: Button,
 }
 
@@ -301,6 +303,12 @@ impl Setup {
         shortcut_row.append(&change_shortcut);
         content.append(&shortcut_row);
         let shortcut_status = hint(&content, "");
+        let autostart = CheckButton::with_label(
+            "Start Poppi in the background when you log in, so it opens instantly",
+        );
+        // On for a fresh setup (no shortcut yet); afterwards what is set.
+        autostart.set_active(shortcut::autostart_enabled() || shortcut::current().is_none());
+        content.append(&autostart);
 
         // ----- voice -----
         section(&content, "3. Voice");
@@ -311,6 +319,17 @@ impl Setup {
         voice_buttons.append(&download);
         voice_buttons.append(&voice_help);
         content.append(&voice_buttons);
+        let wake_word = CheckButton::with_label(
+            "Say \u{201c}Poppi\u{201d} to open it, e.g. \u{201c}Poppi, open my downloads\u{201d}",
+        );
+        wake_word.set_active(current.voice.wake_word);
+        content.append(&wake_word);
+        hint(
+            &content,
+            "The microphone then stays open while Poppi runs; what you say is checked on this \
+             computer only, and nothing is kept. Opening apps, files and searches runs right \
+             away when asked by voice; commands and power actions still wait for Enter.",
+        );
 
         // ----- buttons -----
         let buttons = GtkBox::new(gtk::Orientation::Horizontal, 10);
@@ -346,6 +365,8 @@ impl Setup {
             shortcut: RefCell::new(None),
             capturing: std::cell::Cell::new(false),
             voice_status,
+            autostart,
+            wake_word,
             done,
         });
 
@@ -566,8 +587,16 @@ impl Setup {
                 }
                 config.ai.default = choice.name.to_string();
             }
+            config.voice.wake_word = self.wake_word.is_active();
+            if config.voice.wake_word {
+                // It can only hear "Poppi" while running.
+                config.behavior.stay_resident = true;
+            }
             config.clone()
         };
+        if let Err(error) = shortcut::set_autostart(self.autostart.is_active()) {
+            problems.push(format!("Could not set up starting at login: {}", error));
+        }
 
         if let Some(accel) = self.shortcut.borrow().as_deref() {
             if let Err(error) = shortcut::bind(accel, &shortcut::launch_command()) {

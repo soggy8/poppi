@@ -136,6 +136,11 @@ struct Launcher {
     /// Keep the newest part of the conversation in view as it grows.
     chat_follow: Cell<bool>,
     dictation: RefCell<dictation::Dictation>,
+    /// Listens for the wake word while the launcher is hidden, if enabled.
+    wake: RefCell<Option<crate::wake::Listener>>,
+    wake_polling: Cell<bool>,
+    /// Opened by voice: harmless results run without Enter.
+    hands_free: Cell<bool>,
     /// Bumped when dictation starts or is cancelled, so a transcript that
     /// arrives afterwards is dropped.
     dictation_gen: Cell<u64>,
@@ -325,9 +330,13 @@ impl Launcher {
             ai_polling: Cell::new(false),
             chat_follow: Cell::new(false),
             dictation: RefCell::new(dictation::Dictation::default()),
+            wake: RefCell::new(None),
+            wake_polling: Cell::new(false),
+            hands_free: Cell::new(false),
             dictation_gen: Cell::new(0),
         });
         launcher.connect_signals();
+        launcher.update_wake_listener();
         launcher
     }
 
@@ -452,6 +461,7 @@ impl Launcher {
             *self.watched_files_config.borrow_mut() = None;
             self.state.borrow_mut().invalidate_file_index();
         }
+        self.update_wake_listener();
         if self.window.is_visible() {
             self.refresh();
         }
@@ -466,6 +476,8 @@ impl Launcher {
     fn show(self: &Rc<Self>) {
         self.end_conversation();
         self.cancel_dictation();
+        self.hands_free.set(false);
+        self.pause_wake_listener(true);
         self.update_mic_button();
         self.state.borrow_mut().reset_session();
         self.history_position.set(None);
@@ -513,6 +525,8 @@ impl Launcher {
         // Nobody is left to read the answer, and nobody is talking to us.
         self.end_conversation();
         self.cancel_dictation();
+        self.hands_free.set(false);
+        self.pause_wake_listener(false);
         if self.config.borrow().behavior.stay_resident {
             self.window.set_visible(false);
         } else {
@@ -828,6 +842,7 @@ impl Launcher {
         });
         if status_changed && proposes {
             self.refresh();
+            self.run_proposed_hands_free();
             return;
         }
         self.transcript_view.borrow_mut().sync(&turns);

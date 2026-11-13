@@ -376,6 +376,11 @@ impl SettingsWindow {
             "Dictate into the search bar (Ctrl+D or the microphone button)",
             current.voice.enabled,
         );
+        let wake_word = check(
+            &main_box,
+            "Open Poppi by saying \u{201c}Poppi\u{201d} (keeps the microphone open while it runs)",
+            current.voice.wake_word,
+        );
         let voice_status = {
             let mut voice = current.voice.clone();
             voice.enabled = true;
@@ -530,6 +535,10 @@ impl SettingsWindow {
                 config.files.respect_gitignore = files_gitignore.is_active();
                 config.clipboard.enabled = clipboard_enabled.is_active();
                 config.voice.enabled = voice_enabled.is_active();
+                config.voice.wake_word = wake_word.is_active();
+                if config.voice.wake_word {
+                    config.behavior.stay_resident = true;
+                }
                 config.emoji.skin_tone = SKIN_TONES
                     .get(skin_tone.selected() as usize)
                     .copied()

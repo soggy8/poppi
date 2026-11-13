@@ -203,9 +203,50 @@ pub fn launch_command() -> String {
     }
 }
 
+/// The XDG autostart entry that starts Poppi in the background at login.
+fn autostart_path() -> Option<std::path::PathBuf> {
+    dirs::config_dir().map(|d| d.join("autostart").join("com.poppi.launcher.desktop"))
+}
+
+pub fn autostart_enabled() -> bool {
+    autostart_path().is_some_and(|p| p.exists())
+}
+
+fn autostart_entry(command: &str) -> String {
+    format!(
+        "[Desktop Entry]\nType=Application\nName=Poppi Launcher\n\
+         Comment=Start Poppi in the background so it opens instantly\n\
+         Exec={} --daemon\nIcon=com.poppi.launcher\nNoDisplay=true\n\
+         X-GNOME-Autostart-enabled=true\n",
+        command
+    )
+}
+
+/// Start Poppi at login, or stop doing so.
+pub fn set_autostart(enabled: bool) -> Result<(), String> {
+    let path = autostart_path().ok_or("No config directory")?;
+    if !enabled {
+        return match std::fs::remove_file(&path) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.to_string()),
+            _ => Ok(()),
+        };
+    }
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    }
+    std::fs::write(&path, autostart_entry(&launch_command())).map_err(|e| e.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn autostart_runs_in_the_background() {
+        let entry = autostart_entry("/opt/poppi/poppi_launcher");
+        assert!(entry.contains("Exec=/opt/poppi/poppi_launcher --daemon\n"));
+        assert!(entry.starts_with("[Desktop Entry]\nType=Application\n"));
+    }
 
     #[test]
     fn gsettings_values_parse() {

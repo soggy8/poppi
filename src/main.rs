@@ -28,6 +28,7 @@ mod units;
 mod usage;
 mod utils;
 mod voice;
+mod wake;
 mod window_switcher;
 
 use config::Config;

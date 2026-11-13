@@ -89,6 +89,8 @@ pub enum Pass {
     Partial,
     /// After speaking: beam search for the best result.
     Final,
+    /// Listening for the wake word: fast, and primed with its spelling.
+    Wake,
 }
 
 /// whisper-cli's `-ac`: an encoder window just wide enough for the audio
@@ -124,8 +126,15 @@ fn transcriber(
     let mut args: Vec<String> = ["-m", &model, "-l", &language, "-nt", "-np", "-ac", &ctx]
         .map(String::from)
         .to_vec();
-    if pass == Pass::Partial {
+    if pass != Pass::Final {
         args.extend(["-bs", "1", "-bo", "1", "-nf"].map(String::from));
+    }
+    if pass == Pass::Wake {
+        // Whisper spells a made-up name right when told it beforehand.
+        args.extend([
+            "--prompt".to_string(),
+            format!("{}.", config.wake_phrase.trim()),
+        ]);
     }
     args.extend(["-f".to_string(), file]);
     (WHISPER_CLI.to_string(), args)
@@ -181,7 +190,7 @@ fn audio_path() -> PathBuf {
 
 /// The recorder process, with `POPPI_UI_RECORDER` standing in for the
 /// microphone in UI tests.
-fn recorder_command() -> Result<(Command, &'static str), String> {
+pub(crate) fn recorder_command() -> Result<(Command, &'static str), String> {
     #[cfg(feature = "ui-test")]
     if let Ok(script) = std::env::var("POPPI_UI_RECORDER") {
         let mut command = Command::new("sh");

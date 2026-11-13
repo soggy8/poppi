@@ -114,6 +114,10 @@ pub struct VoiceConfig {
     pub model: String,
     /// Spoken language code for whisper-cli ("en", "de", …) or "auto".
     pub language: String,
+    /// Keep listening for `wake_phrase` while Poppi runs in the background;
+    /// needs whisper-cli. Off unless turned on: the microphone stays open.
+    pub wake_word: bool,
+    pub wake_phrase: String,
 }
 
 impl Default for VoiceConfig {
@@ -123,6 +127,8 @@ impl Default for VoiceConfig {
             command: String::new(),
             model: "~/.local/share/poppi_launcher/ggml-base.en.bin".to_string(),
             language: "auto".to_string(),
+            wake_word: false,
+            wake_phrase: "Poppi".to_string(),
         }
     }
 }
